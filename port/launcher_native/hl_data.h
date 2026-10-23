@@ -12,6 +12,8 @@
 #include <string>
 #include <vector>
 
+namespace PS1 { class ISOReader; }
+
 namespace hl {
 
 struct Image {
@@ -26,7 +28,10 @@ struct Image {
     Image crop_alpha() const;           // to the opaque bounding box
 };
 
-// ISO 9660 on a MODE2/2352 BIN (from its CUE) or a 2048-byte ISO.
+// ISO 9660 of a disc image, read through the runtime's own disc code
+// (PSXRecompV4::resolve_disc_path + PS1::ISOReader), so the launcher accepts
+// exactly what the game mounts: .cue (quoted or bare FILE, renamed or
+// differently cased .bin), .bin/.img, .iso and .chd.
 class Disc {
 public:
     bool open(const std::filesystem::path& cue_or_bin, std::string* error);
@@ -37,8 +42,7 @@ private:
     struct Entry { uint32_t lba, size; };
     bool sector(uint32_t lba, uint8_t* out2048) const;
     void walk(uint32_t lba, uint32_t size, const std::string& prefix, int depth);
-    std::shared_ptr<std::FILE> f_;
-    int sector_size_ = 2352, data_offset_ = 24;
+    std::shared_ptr<PS1::ISOReader> iso_;
     std::map<std::string, Entry> files_;
 };
 

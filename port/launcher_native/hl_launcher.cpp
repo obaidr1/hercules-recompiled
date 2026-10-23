@@ -656,6 +656,7 @@ struct Hit { SDL_FRect r; std::function<void()> hover, click; };
 struct App;
 std::string system_language();   // first known language of the system (SDL)
 std::string disc_release(const fs::path& p);
+std::string disc_none_message(App& a, const fs::path& p);
 fs::path find_disc(const Ctx& c, const std::string& id);
 void remember_disc(const Ctx& c, const fs::path& p, const std::string& id);
 void use_release(Ctx& c, const std::string& id);
@@ -1280,7 +1281,7 @@ bool App::ask_disc() {
     const fs::path p = pick_disc(win);
     if (p.empty()) return false;
     const std::string got = disc_release(p);
-    if (got.empty()) { show_message(T("disc.none")); return false; }
+    if (got.empty()) { show_message(disc_none_message(*this, p)); return false; }
     remember_disc(ctx, p, got);
     if (got != ctx.id) {
         show_message(T("disc.wrong", {{"got", got}, {"lang", lang_name()}, {"id", ctx.id}}));
@@ -1686,6 +1687,19 @@ std::string disc_release(const fs::path& p) {
     return "";
 }
 
+// Not one of the PAL releases: say so when it is the US one (SLUS-01029),
+// which the port does not support, instead of "not a Hercules disc".
+std::string disc_none_message(App& a, const fs::path& p) {
+    Disc d;
+    std::string err;
+    std::vector<uint8_t> cnf;
+    if (d.open(p, &err) && d.read("SYSTEM.CNF", cnf) &&
+        std::string(cnf.begin(), cnf.end()).find("SLUS_010.29") != std::string::npos)
+        return a.T("disc.ntsc");
+    std::fprintf(stderr, "launcher: %s: %s\n", p.u8string().c_str(), err.empty() ? "no PAL Hercules boot file" : err.c_str());
+    return a.T("disc.none");
+}
+
 // One disc per release: disc.cfg (the German one, as before) or disc-<id>.cfg.
 fs::path disc_cfg(const Ctx& c, const std::string& id) {
     return c.exe_dir / (id == "SCES-00893" ? std::string("disc.cfg") : "disc-" + id + ".cfg");
@@ -1730,7 +1744,7 @@ void use_release(Ctx& c, const std::string& id) {
 // SDL's native file dialog runs asynchronously; pump events until it answers.
 fs::path pick_disc(SDL_Window* win) {
     struct Result { bool done = false; std::string path; } r;
-    static const SDL_DialogFileFilter filters[] = {{"PlayStation disc image (*.cue, *.bin, *.iso)", "cue;bin;iso"}};
+    static const SDL_DialogFileFilter filters[] = {{"PlayStation disc image (*.cue, *.bin, *.img, *.iso, *.chd)", "cue;bin;img;iso;chd"}};
     SDL_ShowOpenFileDialog(
         [](void* ud, const char* const* list, int) {
             auto* res = static_cast<Result*>(ud);
@@ -1794,7 +1808,7 @@ int launcher_main(int argc, char** argv) {
         if (p.empty()) { SDL_Quit(); return 0; }
         const std::string got = disc_release(p);
         if (got.empty()) {
-            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_WARNING, "Hercules Recompiled", app.T("disc.none").c_str(), app.win);
+            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_WARNING, "Hercules Recompiled", disc_none_message(app, p).c_str(), app.win);
             continue;
         }
         remember_disc(c, p, got);

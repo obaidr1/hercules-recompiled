@@ -1,6 +1,9 @@
 // Disc reading and art decoding for the Hercules launcher (see hl_data.h).
 #include "hl_data.h"
 
+#include "disc_path.h"
+#include "iso_reader.h"
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -39,34 +42,20 @@ static uint32_t le32(const uint8_t* p) { return p[0] | p[1] << 8 | p[2] << 16 | 
 static uint16_t le16(const uint8_t* p) { return uint16_t(p[0] | p[1] << 8); }
 
 bool Disc::open(const std::filesystem::path& path, std::string* error) {
-    std::filesystem::path bin = path;
-    std::string ext = path.extension().string();
-    std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-    if (ext == ".cue") {
-        std::ifstream cue(path);
-        std::string text((std::istreambuf_iterator<char>(cue)), {});
-        std::smatch m;
-        if (!std::regex_search(text, m, std::regex("FILE\\s+\"([^\"]+)\""))) {
-            if (error) *error = "no FILE line in the cue sheet";
-            return false;
-        }
-        bin = path.parent_path() / std::filesystem::u8path(m[1].str());
-        if (std::regex_search(text, std::regex("MODE1/2352"))) { sector_size_ = 2352; data_offset_ = 16; }
-        else if (std::regex_search(text, std::regex("MODE1/2048"))) { sector_size_ = 2048; data_offset_ = 0; }
-    } else if (ext == ".iso") {
-        sector_size_ = 2048; data_offset_ = 0;
-    }
-    std::FILE* f = nullptr;
-#ifdef _WIN32
-    f = _wfopen(bin.wstring().c_str(), L"rb");
-#else
-    f = std::fopen(bin.string().c_str(), "rb");
-#endif
-    if (!f) {
-        if (error) *error = "cannot open " + bin.u8string();
+    const PSXRecompV4::DiscPathResolution r = PSXRecompV4::resolve_disc_path(path);
+    std::string mount;
+    try {
+        mount = r.mount.string();   // what the game's reader takes (the ANSI code page on Windows)
+    } catch (const std::exception&) {
+        if (error) *error = "the path " + r.mount.u8string() + " has characters the disc reader cannot open";
         return false;
     }
-    f_.reset(f, std::fclose);
+    auto iso = std::make_shared<PS1::ISOReader>();
+    if (!iso->Open(mount)) {
+        if (error) *error = r.note.empty() ? "cannot open " + r.mount.u8string() : r.note;
+        return false;
+    }
+    iso_ = iso;
     uint8_t pvd[2048];
     if (!sector(16, pvd) || std::memcmp(pvd + 1, "CD001", 5) != 0) {
         if (error) *error = "no ISO 9660 volume on the disc image";
@@ -78,13 +67,7 @@ bool Disc::open(const std::filesystem::path& path, std::string* error) {
 }
 
 bool Disc::sector(uint32_t lba, uint8_t* out) const {
-    if (!f_) return false;
-#ifdef _WIN32
-    if (_fseeki64(f_.get(), int64_t(lba) * sector_size_ + data_offset_, SEEK_SET) != 0) return false;
-#else
-    if (fseeko(f_.get(), off_t(lba) * sector_size_ + data_offset_, SEEK_SET) != 0) return false;
-#endif
-    return std::fread(out, 1, 2048, f_.get()) == 2048;
+    return iso_ && iso_->ReadSector(lba, out);
 }
 
 void Disc::walk(uint32_t lba, uint32_t size, const std::string& prefix, int depth) {
