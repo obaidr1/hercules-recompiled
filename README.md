@@ -33,9 +33,10 @@ Checksums and release notes: [latest release](https://github.com/obaidr1/hercule
 
 1. Unzip into a folder of its own (the archive has no top-level folder).
 2. Start `Hercules_Recompiled.exe` (Windows) or `./Hercules_Recompiled` (Linux).
-3. On first start, pick your disc image: the `.cue` of a dump of one of the
-   **PAL releases** SCES-00891 (English), -00892 (French), -00893 (German),
-   -00894 (Italian) or -00895 (Spanish), `.cue` + `.bin`. The launcher's
+3. On first start, pick your disc image (`.cue` + `.bin`, `.chd`, `.bin`,
+   `.img` or `.iso`) of one of the **PAL releases** SCES-00891 (English),
+   -00892 (French), -00893 (German), -00894 (Italian) or -00895 (Spanish).
+   The US release (SLUS-01029) is not supported. The launcher's
    language picks the release; it asks for that release's disc and remembers
    it (`disc.cfg`, `disc-<id>.cfg`) next to the program.
 4. Choose a level in the launcher. Keyboard, mouse and gamepads work; F11
