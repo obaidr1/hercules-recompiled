@@ -173,6 +173,7 @@ const Setting kSettings[] = {
     {"crt_sim", "b", "false"}, {"crt_mask", "f", "0.5"}, {"crt_bloom", "f", "0.35"},
     {"skip_intro", "b", "true"}, {"skip_memcard", "b", "true"}, {"language", "s", ""}, {"fast_cd", "b", "true"},
     {"updates", "b", "true"}, {"frame_blend", "s", "off"}, {"ntsc_speed", "b", "true"},
+    {"touch_show", "b", "true"}, {"touch_size", "s", "100"}, {"touch_alpha", "s", "70"}, {"touch_pos", "s", "low"},
 };
 const char* const kVideoKeys[] = {"internal_resolution", "window_width", "fullscreen", "aspect_ratio", "vsync",
                                   "texture_filtering", "antialiasing", "crt_filter", "scanlines",
@@ -681,6 +682,8 @@ struct Screen {
     virtual void key(App&, Key) = 0;
     // a horizontal swipe on a touch screen: d = +1 finger moved left (next), -1 right
     virtual void swipe(App& a, int d) { key(a, d > 0 ? Key::Right : Key::Left); }
+    // a finger held still on an entry (touch screens): what □ / Delete does
+    virtual void long_press(App& a) { key(a, Key::Delete); }
 };
 
 struct App {
@@ -705,6 +708,11 @@ struct App {
     SDL_FRect press{};
     bool touching = false;   // Android: where the finger went down (swipes)
     float touch_x = 0, touch_y = 0;
+    uint64_t touch_t = 0;    // when; a still finger after 550 ms is a long press
+    bool long_fired = false;
+    std::string toast_text;  // Android: a short notice that a setting changed
+    uint64_t toast_until = 0;
+    void toast(const std::string& s) { toast_text = s; toast_until = SDL_GetTicks() + 1500; }
     std::string message;
     uint64_t t0 = 0;
     SDL_Gamepad* pad = nullptr;
@@ -1078,7 +1086,11 @@ void LevelScreen::render(App& a) {
     a.hit(70, 28, 30, 102, [] {}, [this, &a] { key(a, Key::Left); });
     a.hit(222, 28, 30, 102, [] {}, [this, &a] { key(a, Key::Right); });
     a.hit(96, 28, 128, 102, [] {}, [this, &a] { key(a, Key::Ok); });
+#if defined(__ANDROID__)
+    a.text_block(a.T("touch.help_levels"), W / 2.0f, 220, "yellow", 300);
+#else
     a.caption("back_help", "help_back", 234);
+#endif
 }
 void LevelScreen::key(App& a, Key k) {
     const std::string cur = a.ctx.store.get("start_level");
@@ -1126,6 +1138,15 @@ std::vector<std::pair<std::string, std::vector<Row>>> all_pages() {
                    {"auto_skip_fmv", {{"false", "show"}, {"true", "skip"}}}, {"rewind", kOnOff}}},
     };
 }
+// The on-screen controls' settings (Android): page TOUCH in the launcher and
+// in the in-game menu.
+std::vector<Row> touch_rows() {
+    return {{"touch_show", kOnOff},
+            {"touch_size", {{"60", "=60 %"}, {"80", "=80 %"}, {"100", "=100 %"}, {"120", "=120 %"}, {"140", "=140 %"}}},
+            {"touch_alpha", {{"40", "=40 %"}, {"70", "=70 %"}, {"100", "=100 %"}}},
+            {"touch_pos", {{"low", "touch_low"}, {"mid", "touch_mid"}}}};
+}
+
 // The option pages as shown. On Android, rows that cannot work there yet are
 // left out: the HD rows (HD needs the GPU renderer, and the pack download is
 // Python) and automatic updates (a new APK updates the app).
@@ -1136,6 +1157,7 @@ std::vector<std::pair<std::string, std::vector<Row>>> pages() {
     for (auto& [name, rows] : ps)
         rows.erase(std::remove_if(rows.begin(), rows.end(), [](const Row& r) { return hidden.count(r.key) > 0; }),
                    rows.end());
+    ps.push_back({"touch", touch_rows()});
 #endif
     return ps;
 }
@@ -1216,6 +1238,9 @@ void OptionsScreen::step(App& a, int d) {
     } else {
         a.set(r.key, nv);
     }
+#if defined(__ANDROID__)
+    a.toast(a.T("opt." + r.key) + ": " + choice_label(a, r.choices[choice_index(nv, r.choices)].second));
+#endif
 }
 void OptionsScreen::key(App& a, Key k) {
     const int n = int(pages()[page].second.size()) + 1;
@@ -1332,6 +1357,10 @@ void App::play(int slot) {
     SDL_setenv_unsafe("PSX_CRT_BLOOM", ctx.store.get("crt_bloom").c_str(), 1);
     if (!ctx.store.get("volume").empty()) SDL_setenv_unsafe("PSX_VOLUME", ctx.store.get("volume").c_str(), 1);
     SDL_setenv_unsafe("PSX_LAUNCH_DISC", ctx.disc.u8string().c_str(), 1);
+    SDL_setenv_unsafe("PSX_TOUCH_SHOW", ctx.store.b("touch_show") ? "1" : "0", 1);
+    SDL_setenv_unsafe("PSX_TOUCH_SIZE", ctx.store.get("touch_size").c_str(), 1);
+    SDL_setenv_unsafe("PSX_TOUCH_ALPHA", ctx.store.get("touch_alpha").c_str(), 1);
+    SDL_setenv_unsafe("PSX_TOUCH_POS", ctx.store.get("touch_pos").c_str(), 1);
     launch_here = true;
     quit = true;
     return;
@@ -1672,12 +1701,15 @@ void App::run() {
                 if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
                     pressing = h != nullptr;
                     touch_x = sx; touch_y = sy; touching = true;
+                    touch_t = SDL_GetTicks(); long_fired = false;
                     if (h) { press = h->r; h->hover(); psx_android_haptic(PSX_HAPTIC_PRESS); }
                 } else if (e.type == SDL_EVENT_MOUSE_MOTION) {
                     if (pressing && !same(h)) pressing = false;      // slid off: cancelled
                 } else {
                     const float dx = sx - touch_x, dy = sy - touch_y;
-                    if (touching && std::fabs(dx) > 40 && std::fabs(dx) > 2 * std::fabs(dy)) {
+                    if (long_fired) {
+                        // the long press already acted
+                    } else if (touching && std::fabs(dx) > 40 && std::fabs(dx) > 2 * std::fabs(dy)) {
                         psx_android_haptic(PSX_HAPTIC_CONFIRM);   // a swipe: page / browse
                         screen->swipe(*this, dx < 0 ? 1 : -1);
                     } else if (pressing && same(h)) {
@@ -1725,6 +1757,17 @@ void App::run() {
         SDL_SetRenderViewport(ren, ox > 0 ? &centre : nullptr);
         screen->render(*this);
 #if defined(__ANDROID__)
+        if (touching && pressing && !long_fired && SDL_GetTicks() - touch_t > 550) {
+            long_fired = true;                       // held still: a long press
+            pressing = false;
+            psx_android_haptic(PSX_HAPTIC_CONFIRM);
+            screen->long_press(*this);
+        }
+        if (!toast_text.empty() && SDL_GetTicks() < toast_until) {   // M7: what just changed
+            const float tw = float(text_width(toast_text, 0.8f)), bw = tw + 16, bx = (W - bw) / 2, by = 196;
+            frame(bx, by, bw, 20, SDL_Color{140, 185, 243, 255});
+            text(toast_text, W / 2.0f, by + 3, "yellow", "center", 0.8f);
+        }
         if (pressing) {   // the touched entry glows while the finger is down
             SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
             const float pulse = 0.5f + 0.5f * std::sin(SDL_GetTicks() / 90.0f);
@@ -2236,6 +2279,8 @@ struct Menu {
     Canvas cv;
     int page = 0, row = 1;
     int press_row = -1, press_d = 0;              // touch: the row under a finger (-1 none)
+    int flash_row = -1;                           // a value just changed: it flashes until flash_until
+    uint64_t flash_until = 0;
     uint32_t pad_prev = 0;
     uint64_t pad_repeat_at = 0;
 };
@@ -2331,6 +2376,13 @@ std::vector<MPage> menu_pages() {
     for (const char* k : {"crt_sim", "crt_mask", "crt_bloom", "scanlines", "scanline_strength", "crt_filter"})
         filter.rows.push_back(from_launcher(k));
     out.push_back(filter);
+#if defined(__ANDROID__)
+    {
+        MPage touch{"touch", {}};
+        for (const Row& r : touch_rows()) touch.rows.push_back({r.key, r.choices});
+        out.push_back(touch);
+    }
+#endif
     MRow vol{"volume", {}};
     for (int v = 0; v <= 100; v += 10) vol.choices.push_back({std::to_string(v), "=" + std::to_string(v) + " %"});
     out.push_back({"sound", {vol}});
@@ -2367,6 +2419,11 @@ float num(const std::string& k, float def) {
 }
 void apply(const std::string& key) {
     const auto& st = m.ctx.store;
+    if (key.rfind("touch_", 0) == 0) {           // the on-screen controls, live
+        touch_pad_configure(st.b("touch_show"), std::atoi(st.get("touch_size").c_str()),
+                            std::atoi(st.get("touch_alpha").c_str()), st.get("touch_pos") == "mid");
+        return;
+    }
     if (key == "hd_sprites" || key == "hd_levels" || key == "hd_hud") {
         if (key == "hd_levels") m.levels_note = st.b("hd_levels");
         const fs::path pack = pack_for(m.ctx);
@@ -2437,6 +2494,8 @@ void render() {
             const MRow& r = pg.rows[i];
             const bool active = m.row == int(i) + 1;
             const float y = 38 + i * 21;
+            if (m.flash_row == int(i) + 1 && SDL_GetTicks() < m.flash_until)
+                m.cv.fill(8, y - 2, 304, 20, {140, 185, 243, 90});
             if (m.press_row == int(i) + 1)       // a finger is on this row (touch)
                 m.cv.fill(8, (r.choices.empty() ? 40 + i * 30 - 4 : y - 2), 304, r.choices.empty() ? 26 : 20,
                           {255, 230, 140, 70});
@@ -2506,6 +2565,8 @@ void step(int d) {
     m.ctx.store.kv[r.key] = nv;
     m.ctx.store.save();
     apply(r.key);
+    m.flash_row = m.row;                          // M7: the changed value flashes
+    m.flash_until = SDL_GetTicks() + 350;
     m.dirty = true;
 }
 
@@ -2592,6 +2653,10 @@ void hook_key(int key, int scancode, int, int repeat) {
     }
 }
 void hook_tick(uint32_t now) {
+    if (m.flash_row >= 0) {                       // let the flash run out
+        m.dirty = true;
+        if (SDL_GetTicks() >= m.flash_until) m.flash_row = -1;
+    }
     const uint32_t b = psx_host_p1_buttons();
     auto bit = [](int code) { return 1u << code; };
     const uint32_t pressed = b & ~m.pad_prev;
