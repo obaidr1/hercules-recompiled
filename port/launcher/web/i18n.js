@@ -13,7 +13,7 @@ const LEVEL_KEYS = ["0", "2", "3", "5", "6", "7", "8", "9", "10", "11"];
 const STR = {
   de: {
     menu: ["SPIEL STARTEN", "PASSWÖRTER", "OPTIONEN", "SPIEL LADEN"],
-    level_title: "WÄHLE DIE EBENE", level_normal: "NORMALER START", level_n: "EBENE {n}",
+    donate: "SPENDEN", level_title: "WÄHLE DIE EBENE", level_normal: "NORMALER START", level_n: "EBENE {n}",
     help_back: "X AUSWÄHLEN   △ ZURÜCK",
     help_load: "X LADEN   □ LÖSCHEN\n△ ZURÜCK",
     load_title: "SPIEL LADEN", empty: "KEINE SPIELSTÄNDE", slot: "PLATZ {n}", of: "{i} VON {n}",
@@ -64,7 +64,7 @@ const STR = {
   },
   en: {
     menu: ["START GAME", "PASSWORDS", "OPTIONS", "LOAD GAME"],
-    level_title: "CHOOSE A LEVEL", level_normal: "NORMAL START", level_n: "LEVEL {n}",
+    donate: "DONATE", level_title: "CHOOSE A LEVEL", level_normal: "NORMAL START", level_n: "LEVEL {n}",
     help_back: "X SELECT   △ BACK",
     help_load: "X LOAD   □ DELETE\n△ BACK",
     load_title: "LOAD GAME", empty: "NO SAVED GAMES", slot: "SLOT {n}", of: "{i} OF {n}",
@@ -113,7 +113,7 @@ const STR = {
   },
   fr: {
     menu: ["COMMENCER", "MOTS DE PASSE", "OPTIONS", "CHARGER"],
-    level_title: "CHOISIS LE NIVEAU", level_normal: "DÉBUT NORMAL", level_n: "NIVEAU {n}",
+    donate: "FAIRE UN DON", level_title: "CHOISIS LE NIVEAU", level_normal: "DÉBUT NORMAL", level_n: "NIVEAU {n}",
     help_back: "X CHOISIR   △ RETOUR",
     help_load: "X CHARGER   □ SUPPRIMER\n△ RETOUR",
     load_title: "CHARGER UNE PARTIE", empty: "AUCUNE SAUVEGARDE", slot: "EMPLACEMENT {n}", of: "{i} SUR {n}",
@@ -162,7 +162,7 @@ const STR = {
   },
   es: {
     menu: ["EMPEZAR", "CONTRASEÑAS", "OPCIONES", "CARGAR"],
-    level_title: "ELIGE EL NIVEL", level_normal: "INICIO NORMAL", level_n: "NIVEL {n}",
+    donate: "DONAR", level_title: "ELIGE EL NIVEL", level_normal: "INICIO NORMAL", level_n: "NIVEL {n}",
     help_back: "X ELEGIR   △ VOLVER",
     help_load: "X CARGAR   □ BORRAR\n△ VOLVER",
     load_title: "CARGAR PARTIDA", empty: "NO HAY PARTIDAS", slot: "RANURA {n}", of: "{i} DE {n}",
@@ -211,7 +211,7 @@ const STR = {
   },
   it: {
     menu: ["INIZIA", "PASSWORD", "OPZIONI", "CARICA"],
-    level_title: "SCEGLI IL LIVELLO", level_normal: "INIZIO NORMALE", level_n: "LIVELLO {n}",
+    donate: "DONA", level_title: "SCEGLI IL LIVELLO", level_normal: "INIZIO NORMALE", level_n: "LIVELLO {n}",
     help_back: "X SCEGLI   △ INDIETRO",
     help_load: "X CARICA   □ ELIMINA\n△ INDIETRO",
     load_title: "CARICA PARTITA", empty: "NESSUN SALVATAGGIO", slot: "SLOT {n}", of: "{i} DI {n}",

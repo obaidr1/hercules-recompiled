@@ -72,6 +72,8 @@ const Release kReleases[] = {
 #define HERCULES_GAME_ID "SCES-00893"
 #endif
 const char* const OWN_ID = HERCULES_GAME_ID;     // the release this exe was built for
+// PayPal donation page behind the main menu's donate button; empty hides it.
+const char* const kDonateUrl = "";
 const Release& release(const std::string& id) {
     for (const auto& r : kReleases) if (id == r.id) return r;
     return kReleases[0];
@@ -869,6 +871,7 @@ struct App {
 // ================================================================ screens
 struct MainMenu : Screen {
     int sel = 0;
+    int last = 0;   // the menu entry the disc's image highlights while the donate button has focus
     void render(App& a) override;
     void key(App& a, Key k) override;
     void activate(App& a);
@@ -915,16 +918,32 @@ void MainMenu::render(App& a) {
     // puts it: by its anchor, which sits elsewhere in every release's image
     // (the words differ in width), so the left edge differs too.
     const bool de = a.disc_art() && a.art.menu.size() == 4;
+    if (sel < 4) last = sel;
     float mx = 70, mw = 180;
     if (de) {
-        const Image& m = a.art.menu[sel];
+        const Image& m = a.art.menu[last];
         mx = float(kMenuAnchorX - m.ax);
         mw = float(m.w);
-        a.draw(m, mx, float(kMenuAnchorY - m.ay));
+        const float my = float(kMenuAnchorY - m.ay);
+        SDL_Texture* t = a.texture(m);
+        if (sel == 4) SDL_SetTextureColorMod(t, 150, 150, 150);   // focus on the donate button: dim the words
+        a.draw(m, mx, my);
+        SDL_SetTextureColorMod(t, 255, 255, 255);
     }
     for (int i = 0; i < 4; ++i) {
         if (!de) a.text(a.T("menu." + std::to_string(i)), W / 2.0f, 101 + i * 26, i == sel ? "blue" : "orange", "center");
         a.hit(mx, 98 + i * 26, mw, 25, [this, i] { sel = i; }, [this, &a] { activate(a); });
+    }
+    // Donate: a small framed button in the bottom right corner (right of the
+    // HD progress bar), the fifth entry for keys and gamepads.
+    if (*kDonateUrl) {
+        constexpr float f = 0.5f;
+        const std::string label = a.T("donate");
+        const float tw = float(a.text_width(label, f)), th = float(a.art.font.height) * a.art.font.scale * f;
+        const float bw = tw + 8, bh = th + 4, bx = W - bw - 4, by = H - bh - 4;
+        a.frame(bx, by, bw, bh, sel == 4 ? SDL_Color{90, 140, 255, 255} : SDL_Color{107, 58, 26, 255});
+        a.text(label, bx + 4, by + 2, sel == 4 ? "blue" : "yellow", "left", f);
+        a.hit(bx, by, bw, bh, [this] { sel = 4; }, [this, &a] { sel = 4; activate(a); });
     }
     const std::string lv = a.ctx.store.get("start_level");
     if (lv != "off") {
@@ -936,14 +955,16 @@ void MainMenu::render(App& a) {
     else a.hd_line(225);
 }
 void MainMenu::key(App& a, Key k) {
-    if (k == Key::Up) sel = (sel + 3) % 4;
-    else if (k == Key::Down) sel = (sel + 1) % 4;
+    const int n = *kDonateUrl ? 5 : 4;
+    if (k == Key::Up) sel = (sel + n - 1) % n;
+    else if (k == Key::Down) sel = (sel + 1) % n;
     else if (k == Key::Ok) activate(a);
 }
 void MainMenu::activate(App& a) {
     if (sel == 0) a.play(-1);
     else if (sel == 1) a.go(&g_levels);
     else if (sel == 2) a.go(&g_options);
+    else if (sel == 4) { if (!SDL_OpenURL(kDonateUrl)) std::fprintf(stderr, "launcher: cannot open %s: %s\n", kDonateUrl, SDL_GetError()); }
     else { a.refresh_states(); a.go(&g_load); }
 }
 
