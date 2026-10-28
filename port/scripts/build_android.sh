@@ -34,5 +34,5 @@ cp -r "$T/gradle" "$T/gradlew" android/
 for d in "$T"/app/src/main/res/mipmap-*; do cp -r "$d" android/app/src/main/res/; done
 cp "$T/app/src/main/res/values/colors.xml" android/app/src/main/res/values/
 echo "sdk.dir=$ANDROID_HOME" > android/local.properties
-(cd android && ./gradlew --no-daemon -q assembleDebug $( [ -n "${HERC_KEYSTORE:-}" ] && echo assembleRelease ))
+(cd android && ./gradlew --no-daemon -q ${HERC_GRADLE_ARGS:-} assembleDebug $( [ -n "${HERC_KEYSTORE:-}" ] && echo assembleRelease ))
 ls -la android/app/build/outputs/apk/*/*.apk

@@ -13,6 +13,9 @@ android {
 
     defaultConfig {
         applicationId = 'io.github.obaidr1.hercules'
+        // -PappIdSuffix=.angletest: a side-by-side test install (own data,
+        // own per-app driver choice)
+        applicationIdSuffix = project.findProperty('appIdSuffix') ?: ''
         minSdk = 29          // timespec_get and friends (Bionic API 29)
         targetSdk = 35
         def p = gameVersion.tokenize('.').collect { it as int }
