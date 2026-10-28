@@ -679,6 +679,8 @@ struct Screen {
     virtual ~Screen() = default;
     virtual void render(App&) = 0;
     virtual void key(App&, Key) = 0;
+    // a horizontal swipe on a touch screen: d = +1 finger moved left (next), -1 right
+    virtual void swipe(App& a, int d) { key(a, d > 0 ? Key::Right : Key::Left); }
 };
 
 struct App {
@@ -701,6 +703,8 @@ struct App {
     bool back_hot = false;   // Android back button under the finger
     bool pressing = false;   // Android: a finger is down on the entry `press`
     SDL_FRect press{};
+    bool touching = false;   // Android: where the finger went down (swipes)
+    float touch_x = 0, touch_y = 0;
     std::string message;
     uint64_t t0 = 0;
     SDL_Gamepad* pad = nullptr;
@@ -848,6 +852,10 @@ struct App {
     }
     // the game's German caption sprite, or the same words in the font
     void caption(const char* sprite, const std::string& key, float y, const char* color = "yellow") {
+#if defined(__ANDROID__)
+        // controller hints ("X select  triangle back") become touch hints
+        if (key == "help_back") { text_block(T("touch.help"), W / 2.0f, y - 14, color, 300); return; }
+#endif
         auto it = art.caption.find(sprite ? sprite : "");
         if (disc_art() && it != art.caption.end()) centered(it->second, y);
         else text_block(T(key), W / 2.0f, y, color, 300);
@@ -914,6 +922,8 @@ struct App {
 // ================================================================ screens
 struct MainMenu : Screen {
     int sel = 0;
+    std::vector<Image> touch_menu;     // Android: the disc's menu images without their pad hint line
+    const Image* touch_src = nullptr;
     int last = 0;   // the menu entry the disc's image highlights while the donate button has focus
     void render(App& a) override;
     void key(App& a, Key k) override;
@@ -925,6 +935,7 @@ struct OptionsScreen : Screen {
     void render(App& a) override;
     void key(App& a, Key k) override;
     void step(App& a, int d);
+    void swipe(App& a, int d) override;   // turns the page, whatever row is active
 };
 struct LoadScreen : Screen {
     int i = 0;
@@ -964,7 +975,25 @@ void MainMenu::render(App& a) {
     if (sel < 4) last = sel;
     float mx = 70, mw = 180;
     if (de) {
+#if defined(__ANDROID__)
+        // The disc's image ends in "press X/START to choose": cut that line
+        // off (it sits below stage y 203) and say "tap" instead.
+        if (touch_src != a.art.menu.data()) {
+            touch_src = a.art.menu.data();
+            touch_menu.clear();
+            for (const Image& src : a.art.menu) {
+                const int keep = std::clamp(203 - (kMenuAnchorY - src.ay), 1, src.h);
+                Image c = src.crop(0, 0, src.w, keep);
+                c.ax = src.ax;
+                c.ay = src.ay;
+                touch_menu.push_back(std::move(c));
+            }
+        }
+        const Image& m = touch_menu[last];
+        a.text(a.T("touch.menu"), W / 2.0f, 210, "yellow", "center", 0.8f);
+#else
         const Image& m = a.art.menu[last];
+#endif
         mx = float(kMenuAnchorX - m.ax);
         mw = float(m.w);
         const float my = float(kMenuAnchorY - m.ay);
@@ -1143,15 +1172,34 @@ void OptionsScreen::render(App& a) {
     const std::string title = a.T("pages." + page_key);
     a.text(a.T("options"), W / 2.0f, 4, "yellow", "center");
     a.text("< " + title + " >", W / 2.0f, 28, row == 0 ? "blue" : "orange", "center");
+#if defined(__ANDROID__)
+    // the title's halves: previous / next page (swiping does the same)
+    a.hit(40, 26, 120, 22, [this] { row = 0; }, [this, &a] { row = 0; step(a, -1); });
+    a.hit(160, 26, 120, 22, [this] { row = 0; }, [this, &a] { row = 0; step(a, 1); });
+#else
     a.hit(60, 30, 200, 18, [this] { row = 0; }, [this, &a] { step(a, 1); });
+#endif
     for (size_t i = 0; i < rows.size(); ++i) {
         const float y = 54 + i * 20;
         const bool active = row == int(i) + 1;
         a.text(a.T("opt." + rows[i].key), 20, y, active ? "blue" : "yellow");
         const auto& ch = rows[i].choices;
-        a.text(rows[i].key == "hd_build" ? a.hd_label() : choice_label(a, ch[choice_index(current(a, rows[i].key), ch)].second),
-               300, y, active ? "blue" : "orange", "right");
+        const std::string value =
+            rows[i].key == "hd_build" ? a.hd_label() : choice_label(a, ch[choice_index(current(a, rows[i].key), ch)].second);
+#if defined(__ANDROID__)
+        // Touch: "<" before the value steps back, the value and ">" step on,
+        // the label steps on too; each a full-height row band.
+        const float vw = float(a.text_width(value)), vx = 290 - vw;
+        a.text(value, 290, y, active ? "blue" : "orange", "right");
+        a.text("<", vx - 16, y, active ? "blue" : "yellow");
+        a.text(">", 298, y, active ? "blue" : "yellow");
+        a.hit(vx - 22, y + 1, 22, 19, [this, i] { row = int(i) + 1; }, [this, &a, i] { row = int(i) + 1; step(a, -1); });
+        a.hit(vx, y + 1, 320 - vx, 19, [this, i] { row = int(i) + 1; }, [this, &a, i] { row = int(i) + 1; step(a, 1); });
+        a.hit(0, y + 1, vx - 22, 19, [this, i] { row = int(i) + 1; }, [this, &a, i] { row = int(i) + 1; step(a, 1); });
+#else
+        a.text(value, 300, y, active ? "blue" : "orange", "right");
         a.hit(14, y + 4, 292, 18, [this, i] { row = int(i) + 1; }, [this, &a, i] { row = int(i) + 1; step(a, 1); });
+#endif
     }
     a.caption("back_help", "help_back", 234);
 }
@@ -1176,6 +1224,12 @@ void OptionsScreen::key(App& a, Key k) {
     else if (k == Key::Left) step(a, -1);
     else if (k == Key::Right || k == Key::Ok) step(a, 1);
     else if (k == Key::Back) a.back();
+}
+void OptionsScreen::swipe(App& a, int d) {
+    const int keep = row;
+    row = 0;
+    step(a, d);
+    row = std::min(keep, int(pages()[page].second.size()));
 }
 
 std::string fmt_time(App& a, std::time_t t) {
@@ -1218,7 +1272,11 @@ void LoadScreen::render(App& a) {
     a.text(s.name.empty() ? a.T("slot", {{"n", std::to_string(s.slot + 1)}}) : s.name, W / 2.0f, 148, "blue", "center");
     a.text(fmt_time(a, s.mtime), W / 2.0f, 166, "yellow", "center");
     a.text(a.T("of", {{"i", std::to_string(i + 1)}, {"n", std::to_string(st.size())}}), W / 2.0f, 184, "orange", "center");
+#if defined(__ANDROID__)
+    a.text_block(a.T("touch.help_load"), W / 2.0f, 204, "yellow", 300);
+#else
     a.text_block(a.T("help_load"), W / 2.0f, 204, "yellow", 300);
+#endif
     if (confirm) {
         a.rect(0, 0, W, H, {16, 4, 3, 158});
         a.text(a.T("delete_q"), W / 2.0f, 92, "yellow", "center");
@@ -1613,12 +1671,21 @@ void App::run() {
                 };
                 if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
                     pressing = h != nullptr;
+                    touch_x = sx; touch_y = sy; touching = true;
                     if (h) { press = h->r; h->hover(); psx_android_haptic(PSX_HAPTIC_PRESS); }
                 } else if (e.type == SDL_EVENT_MOUSE_MOTION) {
                     if (pressing && !same(h)) pressing = false;      // slid off: cancelled
                 } else {
-                    if (pressing && same(h)) { psx_android_haptic(PSX_HAPTIC_CONFIRM); h->click(); }
+                    const float dx = sx - touch_x, dy = sy - touch_y;
+                    if (touching && std::fabs(dx) > 40 && std::fabs(dx) > 2 * std::fabs(dy)) {
+                        psx_android_haptic(PSX_HAPTIC_CONFIRM);   // a swipe: page / browse
+                        screen->swipe(*this, dx < 0 ? 1 : -1);
+                    } else if (pressing && same(h)) {
+                        psx_android_haptic(PSX_HAPTIC_CONFIRM);
+                        h->click();
+                    }
                     pressing = false;
+                    touching = false;
                 }
                 break;
             }
@@ -2168,6 +2235,7 @@ struct Menu {
     Image plaster;
     Canvas cv;
     int page = 0, row = 1;
+    int press_row = -1, press_d = 0;              // touch: the row under a finger (-1 none)
     uint32_t pad_prev = 0;
     uint64_t pad_repeat_at = 0;
 };
@@ -2254,7 +2322,9 @@ std::vector<MPage> menu_pages() {
     if (hd_pack_ready(m.ctx))
         for (const char* k : {"hd_sprites", "hd_levels", "hd_hud"}) gfx.rows.push_back(from_launcher(k));
     for (const char* k : {"texture_filtering", "aspect_ratio"}) gfx.rows.push_back(from_launcher(k));
+#if !defined(__ANDROID__)                        // always fullscreen on a phone
     gfx.rows.push_back({"fullscreen", {{"0", "window"}, {"1", "full"}}});
+#endif
     for (const char* k : {"perspective_texturing", "geometry_correction"}) gfx.rows.push_back(from_launcher(k));
     out.push_back(gfx);
     MPage filter{"filter", {}};
@@ -2264,11 +2334,13 @@ std::vector<MPage> menu_pages() {
     MRow vol{"volume", {}};
     for (int v = 0; v <= 100; v += 10) vol.choices.push_back({std::to_string(v), "=" + std::to_string(v) + " %"});
     out.push_back({"sound", {vol}});
+#if !defined(__ANDROID__)                        // keyboard pages: not on a phone
     MPage keys{"keys", {}};                      // player 1's keyboard keys, live (keybinds.ini)
     for (int b : kRebind) keys.rows.push_back({std::string("kb.") + psx_keybinds_button_name(b), {}});
     keys.rows.push_back({"act.kb_reset", {}});
     out.push_back(keys);
     out.push_back({"hotkeys", {}});              // what cannot be changed here
+#endif
     return out;
 }
 
@@ -2365,22 +2437,41 @@ void render() {
             const MRow& r = pg.rows[i];
             const bool active = m.row == int(i) + 1;
             const float y = 38 + i * 21;
+            if (m.press_row == int(i) + 1)       // a finger is on this row (touch)
+                m.cv.fill(8, (r.choices.empty() ? 40 + i * 30 - 4 : y - 2), 304, r.choices.empty() ? 26 : 20,
+                          {255, 230, 140, 70});
             if (r.choices.empty()) {             // an action
                 std::string label = T("ingame." + r.key.substr(4));
                 if (r.key == "act.quit" && m.quit_armed) label = T("ingame.quit_sure");
                 text(label, W / 2.0f, 40 + i * 30, active ? "blue" : "yellow", "center");
             } else {
                 text(T("opt." + r.key), 14, y, active ? "blue" : "yellow", "left", 0.85f);
+#if defined(__ANDROID__)
+                const std::string v = label_of(r);
+                const float vx = 292 - text_width(v, 0.85f);
+                text(v, 292, y, active ? "blue" : "orange", "right", 0.85f);
+                text("<", vx - 14, y, active ? "blue" : "yellow", "left", 0.85f);
+                text(">", 297, y, active ? "blue" : "yellow", "left", 0.85f);
+#else
                 text(label_of(r), 306, y, active ? "blue" : "orange", "right", 0.85f);
+#endif
             }
         }
+#if defined(__ANDROID__)
+        if (pg.title == "pause") text(T("touch.pause_hint"), W / 2.0f, 150, "orange", "center", 0.6f);
+#else
         if (pg.title == "pause") text(T("ingame.hint"), W / 2.0f, 150, "orange", "center", 0.6f);
+#endif
         // level textures are matched when a level uploads them, so switching
         // HD scenery back on shows from the next level (BUG-20261014-004)
         if (pg.title == "gfx" && m.levels_note)
             text(T("ingame.hd_levels_next"), W / 2.0f, 203, "orange", "center", 0.6f);
     }
+#if defined(__ANDROID__)
+    text(T("touch.help_menu"), W / 2.0f, 218, "yellow", "center", 0.7f);
+#else
     text(T("help_back"), W / 2.0f, 218, "yellow", "center", 0.7f);
+#endif
     m.dirty = false;
 }
 
@@ -2535,7 +2626,54 @@ int hook_image(const uint32_t** px, int* w, int* h) {
     return 1;
 }
 
-const PsxGameMenuHooks kHooks = {hook_open, hook_is_open, hook_key, hook_tick, hook_image};
+// Touch: which row, and which part of it, a finger is on (stage coordinates of
+// the 4:3 area). Returns the row (0 = the page title, -1 none) and in *d the
+// step a release there makes (-1 / +1, 0 = an action's OK).
+int touch_target(float sx, float sy, int* d) {
+    const auto ps = menu_pages();
+    const MPage& pg = ps[size_t(m.page) % ps.size()];
+    if (sy >= 0 && sy < 26) { *d = sx < W / 2.0f ? -1 : 1; return 0; }
+    for (size_t i = 0; i < pg.rows.size(); ++i) {
+        const MRow& r = pg.rows[i];
+        if (r.choices.empty()) {
+            const float y = 40 + i * 30;
+            if (sy >= y - 4 && sy < y + 22) { *d = 0; return int(i) + 1; }
+        } else {
+            const float y = 38 + i * 21;
+            if (sy >= y - 2 && sy < y + 19) {
+                const float vx = 292 - text_width(label_of(r), 0.85f);
+                *d = (sx >= vx - 20 && sx < vx) ? -1 : 1;
+                return int(i) + 1;
+            }
+        }
+    }
+    return -1;
+}
+// A finger down marks its row (and it glows), moving off cancels, lifting
+// on the same row acts -- with the launcher's haptic ticks.
+void hook_touch(float x, float y, int phase) {
+    if (!m.open || m.cv.k <= 0) return;
+    const float sx = (x * m.cv.w - m.cv.ox) / m.cv.k, sy = (y * m.cv.h - m.cv.oy) / m.cv.k;
+    int d = 0;
+    const int row = touch_target(sx, sy, &d);
+    if (phase == 0) {
+        m.press_row = row;
+        m.press_d = d;
+        if (row >= 0) { m.row = row; psx_android_haptic(PSX_HAPTIC_PRESS); }
+    } else if (phase == 1) {
+        if (m.press_row >= 0 && (row != m.press_row || d != m.press_d)) m.press_row = -1;
+    } else {
+        if (m.press_row >= 0 && row == m.press_row && d == m.press_d) {
+            psx_android_haptic(PSX_HAPTIC_CONFIRM);
+            m.row = row;
+            if (row == 0 || d != 0) step(d); else step(0);
+        }
+        m.press_row = -1;
+    }
+    m.dirty = true;
+}
+
+const PsxGameMenuHooks kHooks = {hook_open, hook_is_open, hook_key, hook_tick, hook_image, hook_touch};
 
 }  // namespace ingame
 
