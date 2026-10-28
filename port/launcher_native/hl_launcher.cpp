@@ -446,10 +446,10 @@ void write_settings(const Ctx& c) {
     }
     want["video"]["auto_skip_fmv"] = "false";   // hercules.skip-intro's skip-fmv does it (the runtime leaves it to a mod)
 #if defined(__ANDROID__)
-    // Until the OpenGL ES renderer: the software renderer, at native size
-    // (4x supersampling costs it the frame rate on a phone).
-    want["video"]["renderer"] = "\"software\"";
-    want["video"]["internal_resolution"] = "\"native\"";
+    // OpenGL ES at 1080p (the runtime caps phones at 4x); the video rows are
+    // hidden on Android.
+    want["video"]["renderer"] = "\"opengl\"";
+    want["video"]["internal_resolution"] = "\"1080p\"";
     want["video"]["antialiasing"] = "false";
 #else
     want["video"]["renderer"] = "\"opengl\"";
