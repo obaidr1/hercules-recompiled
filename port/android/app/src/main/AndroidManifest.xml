@@ -21,6 +21,9 @@
         <!-- SDL reads SDL_ENV.* as environment: always landscape, even with
              the phone's rotation lock on (SDL otherwise asks for fullUser). -->
         <meta-data android:name="SDL_ENV.SDL_ORIENTATIONS" android:value="LandscapeLeft LandscapeRight" />
+        <!-- The back gesture/button arrives as a key (AC_BACK): back in the
+             launcher's menus instead of closing the app. -->
+        <meta-data android:name="SDL_ENV.SDL_ANDROID_TRAP_BACK_BUTTON" android:value="1" />
         <activity android:name=".HerculesActivity"
             android:label="@string/app_name"
             android:alwaysRetainTaskState="true"

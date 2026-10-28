@@ -440,7 +440,15 @@ void write_settings(const Ctx& c) {
         want["video"][key] = toml_value(key, v);
     }
     want["video"]["auto_skip_fmv"] = "false";   // hercules.skip-intro's skip-fmv does it (the runtime leaves it to a mod)
+#if defined(__ANDROID__)
+    // Until the OpenGL ES renderer: the software renderer, at native size
+    // (4x supersampling costs it the frame rate on a phone).
+    want["video"]["renderer"] = "\"software\"";
+    want["video"]["internal_resolution"] = "\"native\"";
+    want["video"]["antialiasing"] = "false";
+#else
     want["video"]["renderer"] = "\"opengl\"";
+#endif
     want["audio"]["frequency"] = c.store.get("frequency");
     want["audio"]["spu_hq"] = c.store.get("spu_hq");
     want["launcher"]["skip_launcher"] = "true";
@@ -681,6 +689,12 @@ struct App {
     Screen* screen = nullptr;
     std::vector<State> states;
     bool quit = false, running = false;
+    bool launch_here = false;   // Android: start the game in this process after run()
+    // Stage width in stage units, the sides included, and the left side's
+    // width: the screens keep drawing in the central W x H area. Wider than W
+    // on Android, where the launcher fills the whole (wide) screen.
+    float sw = W, ox = 0;
+    bool back_hot = false;   // Android back button under the finger
     std::string message;
     uint64_t t0 = 0;
     SDL_Gamepad* pad = nullptr;
@@ -716,6 +730,25 @@ struct App {
         SDL_RenderTextureRotated(ren, texture(img), nullptr, &d, 0, nullptr, flip ? SDL_FLIP_HORIZONTAL : SDL_FLIP_NONE);
     }
     void centered(const Image& img, float y) { draw(img, std::round((W - img.w) / 2.0f), y); }
+    // A screen's background. The original fills the central W x H area
+    // (titles drawn into it, like the menu's logo, stay whole); on a wider
+    // stage the sides get the same picture scaled to the stage width,
+    // cropped at the top and bottom and darkened, as a frame. On the PC the
+    // stage is W wide: just the full-stage draw.
+    void backdrop(const Image& img) {
+        if (img.empty()) return;
+        if (sw > W) {
+            const float h = H * sw / W;
+            SDL_Rect vp;
+            SDL_GetRenderViewport(ren, &vp);
+            SDL_SetRenderViewport(ren, nullptr);
+            draw(img, 0, (H - h) / 2, sw, h);
+            SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
+            rect(0, 0, sw, H, {0, 0, 0, 110});
+            SDL_SetRenderViewport(ren, &vp);
+        }
+        draw(img, 0, 0, W, H);
+    }
     void rect(float x, float y, float w, float h, SDL_Color c) {
         SDL_SetRenderDrawColor(ren, c.r, c.g, c.b, c.a);
         SDL_FRect r{x * SC, y * SC, w * SC, h * SC};
@@ -907,7 +940,7 @@ LoadScreen g_load;
 constexpr int kMenuAnchorX = 162, kMenuAnchorY = 118;
 
 void MainMenu::render(App& a) {
-    a.draw(a.art.bg["menu"], 0, 0, W, H);
+    a.backdrop(a.art.bg["menu"]);
     auto muse = [&](std::vector<Image>& f, float x, float y, float fps, bool flip = false, int offset = 0) {
         if (f.empty()) return;
         a.draw(f[(a.anim(f.size(), fps) + offset) % f.size()], x, y, -1, -1, flip);
@@ -974,13 +1007,13 @@ const std::map<std::string, std::string> kFresco = {{"off", "6"}, {"0", "9"}, {"
                                                     {"11", "7"}};
 
 void LevelScreen::render(App& a) {
-    a.draw(a.art.bg["room"], 0, 0, W, H);
+    a.backdrop(a.art.bg["room"]);
     {   // light shafts: screen blend at 85 %
         SDL_Texture* t = a.texture(a.art.bg["beams"]);
         SDL_SetTextureBlendMode(t, SDL_ComposeCustomBlendMode(SDL_BLENDFACTOR_ONE, SDL_BLENDFACTOR_ONE_MINUS_SRC_COLOR,
                                 SDL_BLENDOPERATION_ADD, SDL_BLENDFACTOR_ZERO, SDL_BLENDFACTOR_ONE, SDL_BLENDOPERATION_ADD));
         SDL_SetTextureColorMod(t, 217, 217, 217);
-        a.draw(a.art.bg["beams"], 0, 0, W, H);
+        a.backdrop(a.art.bg["beams"]);
     }
     const std::string lv = a.ctx.store.get("start_level");
     a.text(a.T("level_title"), W / 2.0f, 2, "blue", "center");
@@ -1081,7 +1114,7 @@ std::string choice_label(App& a, const std::string& label) {
 }
 
 void OptionsScreen::render(App& a) {
-    a.draw(a.art.bg["plaster"], 0, 0, W, H);
+    a.backdrop(a.art.bg["plaster"]);
     const auto ps = pages();
     const auto& [page_key, rows] = ps[page];
     const std::string title = a.T("pages." + page_key);
@@ -1136,7 +1169,7 @@ std::string fmt_time(App& a, std::time_t t) {
 }
 
 void LoadScreen::render(App& a) {
-    a.draw(a.art.bg["plaster2"], 0, 0, W, H);
+    a.backdrop(a.art.bg["plaster2"]);
     a.caption("load", "load_title", 6);
     auto& st = a.states;
     if (st.empty()) {
@@ -1206,6 +1239,22 @@ void App::play(int slot) {
     const fs::path pack = pack_for(ctx);
     write_settings(ctx);
     write_mod_state(ctx, pack, slot < 0);
+#if defined(__ANDROID__)
+    // No second process on Android: hand the disc to main() and close the
+    // launcher; launcher_main() returns PSX_GAME_LAUNCHER_RUN_HERE.
+    SDL_unsetenv_unsafe("PSX_LOAD_SLOT");
+    if (slot >= 0) SDL_setenv_unsafe("PSX_LOAD_SLOT", std::to_string(slot).c_str(), 1);
+    SDL_setenv_unsafe("PSX_HL_HOME", ctx.exe_dir.u8string().c_str(), 1);
+    SDL_setenv_unsafe("PSX_KEYBINDS_INI", (ctx.exe_dir / "keybinds.ini").u8string().c_str(), 1);
+    SDL_setenv_unsafe("PSX_CRT", ctx.store.b("crt_sim") ? "1" : "0", 1);
+    SDL_setenv_unsafe("PSX_CRT_MASK", ctx.store.get("crt_mask").c_str(), 1);
+    SDL_setenv_unsafe("PSX_CRT_BLOOM", ctx.store.get("crt_bloom").c_str(), 1);
+    if (!ctx.store.get("volume").empty()) SDL_setenv_unsafe("PSX_VOLUME", ctx.store.get("volume").c_str(), 1);
+    SDL_setenv_unsafe("PSX_LAUNCH_DISC", ctx.disc.u8string().c_str(), 1);
+    launch_here = true;
+    quit = true;
+    return;
+#endif
     SDL_Environment* env = SDL_CreateEnvironment(true);
     for (const char* k : {"PSX_LOAD_SLOT", "PSX_SCANLINES", "PSX_SCANLINE_STRENGTH", "PSX_NO_LAUNCHER", "PSX_VOLUME"})
         SDL_UnsetEnvironmentVariable(env, k);
@@ -1419,7 +1468,7 @@ Key key_of(SDL_Keycode k) {
     case SDLK_LEFT: return Key::Left;
     case SDLK_RIGHT: return Key::Right;
     case SDLK_RETURN: case SDLK_KP_ENTER: case SDLK_SPACE: case SDLK_X: return Key::Ok;
-    case SDLK_ESCAPE: case SDLK_BACKSPACE: return Key::Back;
+    case SDLK_ESCAPE: case SDLK_BACKSPACE: case SDLK_AC_BACK: return Key::Back;   // AC_BACK: Android's back
     case SDLK_DELETE: case SDLK_Q: return Key::Delete;
     default: return Key::None;
     }
@@ -1481,11 +1530,27 @@ void App::run() {
             SDL_GetWindowSizeInPixels(win, &ww, &wh);
             const float vw = std::min(float(ww), wh * 4.0f / 3.0f), vh = vw * 3.0f / 4.0f;
             view = {(ww - vw) / 2, (wh - vh) / 2, vw, vh};
+#if defined(__ANDROID__)
+            // Fill the screen: the stage grows sideways to the window's shape
+            // (same unit size as the 4:3 view), the screens stay centred.
+            if (ww > 0 && wh > 0) {
+                const float want = std::max(float(W), std::round(240.0f * ww / wh));
+                if (want != sw || !stage) {
+                    if (stage) SDL_DestroyTexture(stage);
+                    sw = want;
+                    ox = (sw - W) / 2;
+                    stage = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ABGR8888, SDL_TEXTUREACCESS_TARGET,
+                                              int(sw * SC), H * SC);
+                    SDL_SetTextureScaleMode(stage, SDL_SCALEMODE_LINEAR);
+                }
+                view = {0, 0, float(ww), float(wh)};
+            }
+#endif
         }
         auto to_stage = [&](float x, float y, float& sx, float& sy) {
             float px = x, py = y;
             SDL_RenderCoordinatesFromWindow(ren, x, y, &px, &py);
-            sx = (px - view.x) / view.w * W;
+            sx = (px - view.x) / view.w * sw - ox;
             sy = (py - view.y) / view.h * H;
         };
         while (SDL_PollEvent(&e)) {
@@ -1533,11 +1598,28 @@ void App::run() {
         SDL_SetRenderTarget(ren, stage);
         SDL_SetRenderDrawColor(ren, 52, 9, 7, 255);
         SDL_RenderClear(ren);
+        const SDL_Rect centre{int(ox * SC), 0, W * SC, H * SC};
+        SDL_SetRenderViewport(ren, ox > 0 ? &centre : nullptr);
         screen->render(*this);
+#if defined(__ANDROID__)
+        // No Esc on a phone: a back button in the left frame while a
+        // submenu is open (the system back gesture does the same).
+        if (!history.empty() && message.empty() && ox >= 40) {
+            SDL_SetRenderViewport(ren, nullptr);
+            const float bw = 44, bh = 26, bx = 10, by = 10;
+            frame(bx, by, bw, bh, back_hot ? SDL_Color{90, 140, 255, 255} : SDL_Color{107, 58, 26, 255});
+            text("<", bx + bw / 2, by + 3, back_hot ? "blue" : "yellow", "center");
+            SDL_SetRenderViewport(ren, ox > 0 ? &centre : nullptr);
+            hit(bx - ox, by, bw, bh, [this] { back_hot = true; }, [this] { back_hot = false; back(); });
+        } else back_hot = false;
+#endif
         if (!message.empty()) {
-            rect(0, 0, W, H, {16, 4, 3, 158});
+            SDL_SetRenderViewport(ren, nullptr);
+            rect(0, 0, sw, H, {16, 4, 3, 158});
+            SDL_SetRenderViewport(ren, ox > 0 ? &centre : nullptr);
             text_block(message, W / 2.0f, 96, "yellow", 280);
         }
+        SDL_SetRenderViewport(ren, nullptr);
         if (!pending_shot.empty()) {
             if (SDL_Surface* sf = SDL_RenderReadPixels(ren, nullptr)) {
                 SDL_SaveBMP(sf, pending_shot.c_str());
@@ -1648,7 +1730,7 @@ void App::upd_line(float y) {
 }
 
 void UpdateScreen::render(App& a) {
-    a.draw(a.art.bg["plaster"], 0, 0, W, H);
+    a.backdrop(a.art.bg["plaster"]);
     a.text(a.T("upd.title", {{"v", a.upd_latest}}), W / 2.0f, 4, "yellow", "center");
     const float f = 0.55f, lh = 12.5f;
     const auto lines = a.wrap(a.upd_notes, 290, f);
@@ -1755,17 +1837,90 @@ void use_release(Ctx& c, const std::string& id) {
     const fs::path sub = c.exe_dir / "lang" / id;
     c.game_dir = id == OWN_ID && !fs::exists(sub / "game.toml") ? c.exe_dir : sub;
     c.exe.clear();
+#if defined(__ANDROID__)
+    // No executables on Android: the game is this process (libmain.so), and
+    // this APK holds the one release it was built for.
+    if (id == OWN_ID) c.exe = c.exe_dir / "libmain.so";
+#else
     for (const char* n : {"Hercules_Recompiled.exe", "Hercules_Recompiled"})
         if (fs::exists(c.game_dir / n)) { c.exe = c.game_dir / n; break; }
+#endif
     c.game_toml = c.game_dir / "game.toml";
     c.game = toml_flat(read_text(c.game_toml));
     c.disc = find_disc(c, id);
 }
 
 // SDL's native file dialog runs asynchronously; pump events until it answers.
+#if defined(__ANDROID__)
+// Android's picker returns a content:// document, not a path, and grants only
+// that one file (a .cue's .bin stays out of reach). Copy it into the app's
+// disc/ folder once; the game reads that copy. Name from the document's last
+// path part ("primary:Download/Hercules.bin" -> "Hercules.bin").
+fs::path import_disc_document(const std::string& uri) {
+    std::string name = uri;
+    std::string dec;
+    for (size_t i = 0; i < name.size(); ++i) {
+        if (name[i] == '%' && i + 2 < name.size()) {
+            dec += char(std::strtol(name.substr(i + 1, 2).c_str(), nullptr, 16));
+            i += 2;
+        } else dec += name[i];
+    }
+    const size_t cut = dec.find_last_of("/:");
+    name = cut == std::string::npos ? dec : dec.substr(cut + 1);
+    if (name.empty()) name = "disc.bin";
+    std::string ext = fs::u8path(name).extension().u8string();
+    for (char& ch : ext) ch = char(std::tolower((unsigned char)ch));
+    if (ext == ".cue") return fs::path("cue-only");   // pick_disc() asks again
+    const fs::path dir = fs::current_path() / "disc";
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    const fs::path out = dir / fs::u8path(name);
+    SDL_IOStream* in = SDL_IOFromFile(uri.c_str(), "rb");
+    if (!in) { std::fprintf(stderr, "launcher: cannot open %s: %s\n", uri.c_str(), SDL_GetError()); return {}; }
+    SDL_IOStream* o = SDL_IOFromFile(out.u8string().c_str(), "wb");
+    bool ok = o != nullptr;
+    std::vector<char> buf(1 << 20);
+    while (ok) {
+        const size_t n = SDL_ReadIO(in, buf.data(), buf.size());
+        if (n == 0) break;
+        ok = SDL_WriteIO(o, buf.data(), n) == n;
+    }
+    SDL_CloseIO(in);
+    if (o) ok = SDL_CloseIO(o) && ok;
+    if (!ok) { fs::remove(out, ec); return {}; }
+    return out;
+}
+#endif
+
 fs::path pick_disc(SDL_Window* win) {
     struct Result { bool done = false; std::string path; } r;
     static const SDL_DialogFileFilter filters[] = {{"PlayStation disc image (*.cue, *.bin, *.img, *.iso, *.chd)", "cue;bin;img;iso;chd"}};
+#if defined(__ANDROID__)
+    // Android filters by MIME type, and disc images have none: show all files.
+    for (;;) {
+        r = Result{};
+        SDL_ShowOpenFileDialog(
+            [](void* ud, const char* const* list, int) {
+                auto* res = static_cast<Result*>(ud);
+                if (list && list[0]) res->path = list[0];
+                res->done = true;
+            },
+            &r, win, nullptr, 0, nullptr, false);
+        while (!r.done) {
+            SDL_Event e;
+            while (SDL_PollEvent(&e)) if (e.type == SDL_EVENT_QUIT) return {};
+            SDL_Delay(20);
+        }
+        if (r.path.empty()) return {};
+        if (r.path.rfind("content://", 0) != 0) return fs::u8path(r.path);
+        const fs::path got = import_disc_document(r.path);
+        if (got != fs::path("cue-only")) return got;
+        const auto& strings = kStrings.at(system_language());
+        const auto it = strings.find("disc.single");
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, "Hercules Recompiled",
+                                 it == strings.end() ? "disc.single" : it->second.c_str(), win);
+    }
+#endif
     SDL_ShowOpenFileDialog(
         [](void* ud, const char* const* list, int) {
             auto* res = static_cast<Result*>(ud);
@@ -1797,6 +1952,9 @@ int launcher_main(int argc, char** argv) {
     Ctx& c = app.ctx;
     const char* base = SDL_GetBasePath();
     c.exe_dir = base ? fs::u8path(base) : fs::current_path();
+#if defined(__ANDROID__)
+    c.exe_dir = fs::current_path();   // main() moved to the app's files folder
+#endif
     c.launcher_exe = fs::u8path(argv[0]);
     if (c.launcher_exe.is_relative() || !fs::exists(c.launcher_exe)) {
         for (const char* n : {"Hercules_Recompiled.exe", "Hercules_Recompiled"})
@@ -1811,7 +1969,11 @@ int launcher_main(int argc, char** argv) {
         std::fprintf(stderr, "launcher: SDL_Init failed: %s\n", SDL_GetError());
         return 1;
     }
+#if defined(__ANDROID__)
+    app.win = SDL_CreateWindow("Hercules Recompiled", 0, 0, SDL_WINDOW_FULLSCREEN | SDL_WINDOW_HIGH_PIXEL_DENSITY);
+#else
     app.win = SDL_CreateWindow("Hercules Recompiled", 1024, 768, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
+#endif
     app.ren = app.win ? SDL_CreateRenderer(app.win, nullptr) : nullptr;
     if (!app.ren) {
         std::fprintf(stderr, "launcher: no window: %s\n", SDL_GetError());
@@ -1859,6 +2021,7 @@ int launcher_main(int argc, char** argv) {
     SDL_DestroyTexture(app.stage);
     SDL_DestroyRenderer(app.ren);
     SDL_DestroyWindow(app.win);
+    if (app.launch_here) return PSX_GAME_LAUNCHER_RUN_HERE;   // SDL stays up for the game
     SDL_Quit();
     return 0;
 }

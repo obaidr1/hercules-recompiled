@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Fullscreen, and drawn under the camera cutout too (it is at the
+         screen side in landscape): the game picture is centred anyway and
+         the touch controls use the full width. -->
+    <style name="AppTheme" parent="android:Theme.NoTitleBar.Fullscreen">
+        <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
+    </style>
+</resources>
