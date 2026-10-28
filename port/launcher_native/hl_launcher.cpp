@@ -26,6 +26,9 @@
 #include "hl_data.h"
 #include "hl_strings.h"
 #include "psx_game_launcher.h"
+#if defined(__ANDROID__)
+#include <jni.h>
+#endif
 #include "psx_game_menu.h"
 
 // The framework's keyboard bindings (runtime/include/psx_keybinds.h; that
@@ -885,7 +888,11 @@ struct App {
     void run();
 
     // ---------------------------------------------------------- HD build
+#if defined(__ANDROID__)
+    bool hd_wanted() const { return false; }   // no HD on Android yet (software renderer, Python download)
+#else
     bool hd_wanted() const { return ctx.store.get("hd_auto") != "false"; }
+#endif
     void hd_start();
     void hd_stop();
     void hd_tick();
@@ -1062,7 +1069,7 @@ std::vector<std::pair<std::string, std::string>> pct(std::vector<double> vs) {
     return out;
 }
 const std::vector<std::pair<std::string, std::string>> kOnOff = {{"true", "on"}, {"false", "off"}};
-std::vector<std::pair<std::string, std::vector<Row>>> pages() {
+std::vector<std::pair<std::string, std::vector<Row>>> all_pages() {
     std::vector<std::pair<std::string, std::string>> langs;
     for (const auto& l : kLangs) langs.push_back({l.code, std::string("=") + l.name});
     return {
@@ -1086,6 +1093,19 @@ std::vector<std::pair<std::string, std::vector<Row>>> pages() {
                    {"spu_hq", {{"true", "high"}, {"false", "normal"}}},
                    {"auto_skip_fmv", {{"false", "show"}, {"true", "skip"}}}, {"rewind", kOnOff}}},
     };
+}
+// The option pages as shown. On Android, rows that cannot work there yet are
+// left out: the HD rows (HD needs the GPU renderer, and the pack download is
+// Python) and automatic updates (a new APK updates the app).
+std::vector<std::pair<std::string, std::vector<Row>>> pages() {
+    auto ps = all_pages();
+#if defined(__ANDROID__)
+    static const std::set<std::string> hidden = {"hd_build", "hd_sprites", "hd_levels", "hd_hud", "updates"};
+    for (auto& [name, rows] : ps)
+        rows.erase(std::remove_if(rows.begin(), rows.end(), [](const Row& r) { return hidden.count(r.key) > 0; }),
+                   rows.end());
+#endif
+    return ps;
 }
 std::string current(App& a, const std::string& key) {
     if (key == "language") return a.lang();     // none chosen: shows the system's
@@ -1936,6 +1956,23 @@ fs::path pick_disc(SDL_Window* win) {
     return fs::u8path(r.path);
 }
 
+#if defined(__ANDROID__)
+// Back to the launcher from a running game: the launcher and the game share
+// this process, so HerculesActivity.restartToLauncher() starts the app anew
+// (it then opens on the launcher) and ends this process.
+void android_restart_to_launcher() {
+    JNIEnv* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
+    jobject act = static_cast<jobject>(SDL_GetAndroidActivity());
+    if (!env || !act) return;
+    jclass cls = env->GetObjectClass(act);
+    jmethodID m = cls ? env->GetStaticMethodID(cls, "restartToLauncher", "()V") : nullptr;
+    if (m) env->CallStaticVoidMethod(cls, m);
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    env->DeleteLocalRef(act);
+    if (cls) env->DeleteLocalRef(cls);
+}
+#endif
+
 std::string system_language() {
     int n = 0;
     SDL_Locale** locs = SDL_GetPreferredLocales(&n);
@@ -2323,6 +2360,9 @@ void step(int d) {
         else if (r.key == "act.quit") {
             if (!m.quit_armed) { m.quit_armed = true; m.dirty = true; return; }
             m.ctx.store.save();
+#if defined(__ANDROID__)
+            android_restart_to_launcher();   // the game is this process: start the app afresh
+#endif
             psx_host_quit();
         }
         return;
@@ -2414,7 +2454,7 @@ void hook_key(int key, int scancode, int, int repeat) {
     case SDLK_LEFT: nav(Key::Left); break;
     case SDLK_RIGHT: nav(Key::Right); break;
     case SDLK_RETURN: case SDLK_KP_ENTER: case SDLK_SPACE: case SDLK_X: if (!repeat) nav(Key::Ok); break;
-    case SDLK_ESCAPE: case SDLK_BACKSPACE: if (!repeat) nav(Key::Back); break;
+    case SDLK_ESCAPE: case SDLK_BACKSPACE: case SDLK_AC_BACK: if (!repeat) nav(Key::Back); break;
     default: break;
     }
 }
