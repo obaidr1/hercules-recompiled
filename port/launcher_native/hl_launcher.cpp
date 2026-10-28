@@ -26,6 +26,7 @@
 #include "hl_data.h"
 #include "hl_strings.h"
 #include "psx_game_launcher.h"
+#include "touch_pad.h"   /* psx_android_haptic */
 #if defined(__ANDROID__)
 #include <jni.h>
 #endif
@@ -698,6 +699,8 @@ struct App {
     // on Android, where the launcher fills the whole (wide) screen.
     float sw = W, ox = 0;
     bool back_hot = false;   // Android back button under the finger
+    bool pressing = false;   // Android: a finger is down on the entry `press`
+    SDL_FRect press{};
     std::string message;
     uint64_t t0 = 0;
     SDL_Gamepad* pad = nullptr;
@@ -1588,6 +1591,38 @@ void App::run() {
             case SDL_EVENT_GAMEPAD_ADDED:
                 if (!pad) pad = SDL_OpenGamepad(e.gdevice.which);
                 break;
+#if defined(__ANDROID__)
+            // Touch (SDL's mouse emulation): the touched entry is selected and
+            // lights up while the finger is down, with a haptic tick; it acts
+            // on release over the same entry -- sliding off cancels.
+            case SDL_EVENT_MOUSE_MOTION:
+            case SDL_EVENT_MOUSE_BUTTON_DOWN:
+            case SDL_EVENT_MOUSE_BUTTON_UP: {
+                float sx, sy;
+                to_stage(e.type == SDL_EVENT_MOUSE_MOTION ? e.motion.x : e.button.x,
+                         e.type == SDL_EVENT_MOUSE_MOTION ? e.motion.y : e.button.y, sx, sy);
+                if (!message.empty()) {
+                    if (e.type == SDL_EVENT_MOUSE_BUTTON_UP) { message.clear(); psx_android_haptic(PSX_HAPTIC_PRESS); }
+                    break;
+                }
+                Hit* h = nullptr;
+                for (auto it = hits.rbegin(); it != hits.rend(); ++it)
+                    if (sx >= it->r.x && sy >= it->r.y && sx < it->r.x + it->r.w && sy < it->r.y + it->r.h) { h = &*it; break; }
+                auto same = [&](const Hit* x) {
+                    return x && x->r.x == press.x && x->r.y == press.y && x->r.w == press.w && x->r.h == press.h;
+                };
+                if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
+                    pressing = h != nullptr;
+                    if (h) { press = h->r; h->hover(); psx_android_haptic(PSX_HAPTIC_PRESS); }
+                } else if (e.type == SDL_EVENT_MOUSE_MOTION) {
+                    if (pressing && !same(h)) pressing = false;      // slid off: cancelled
+                } else {
+                    if (pressing && same(h)) { psx_android_haptic(PSX_HAPTIC_CONFIRM); h->click(); }
+                    pressing = false;
+                }
+                break;
+            }
+#else
             case SDL_EVENT_MOUSE_MOTION:
             case SDL_EVENT_MOUSE_BUTTON_DOWN: {
                 float sx, sy;
@@ -1601,6 +1636,7 @@ void App::run() {
                 }
                 break;
             }
+#endif
             default: break;
             }
         }
@@ -1622,6 +1658,12 @@ void App::run() {
         SDL_SetRenderViewport(ren, ox > 0 ? &centre : nullptr);
         screen->render(*this);
 #if defined(__ANDROID__)
+        if (pressing) {   // the touched entry glows while the finger is down
+            SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
+            const float pulse = 0.5f + 0.5f * std::sin(SDL_GetTicks() / 90.0f);
+            rect(press.x - 2, press.y - 1, press.w + 4, press.h + 2,
+                 {255, 230, 140, Uint8(40 + 40 * pulse)});
+        }
         // No Esc on a phone: a back button in the left frame while a
         // submenu is open (the system back gesture does the same).
         if (!history.empty() && message.empty() && ox >= 40) {
