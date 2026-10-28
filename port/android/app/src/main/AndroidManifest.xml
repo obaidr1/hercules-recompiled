@@ -18,6 +18,9 @@
         android:enableOnBackInvokedCallback="false"
         android:hardwareAccelerated="true"
         android:extractNativeLibs="false">
+        <!-- SDL reads SDL_ENV.* as environment: always landscape, even with
+             the phone's rotation lock on (SDL otherwise asks for fullUser). -->
+        <meta-data android:name="SDL_ENV.SDL_ORIENTATIONS" android:value="LandscapeLeft LandscapeRight" />
         <activity android:name=".HerculesActivity"
             android:label="@string/app_name"
             android:alwaysRetainTaskState="true"
