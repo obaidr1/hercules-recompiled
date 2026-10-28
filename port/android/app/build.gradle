@@ -1,0 +1,54 @@
+plugins {
+    id 'com.android.application'
+}
+
+// SDL3's Java glue comes straight from its source tree (same version as the
+// SDL3 linked into libmain.so).
+def sdl3Src = System.getenv('SDL3_SRC') ?: '/root/sdl3-src'
+def gameVersion = rootProject.file('../VERSION').text.trim()
+
+android {
+    namespace = 'io.github.obaidr1.hercules'
+    compileSdk = 35
+
+    defaultConfig {
+        applicationId = 'io.github.obaidr1.hercules'
+        minSdk = 29          // timespec_get and friends (Bionic API 29)
+        targetSdk = 35
+        def p = gameVersion.tokenize('.').collect { it as int }
+        versionCode = p[0] * 10000 + p[1] * 100 + p[2]
+        versionName = gameVersion
+    }
+
+    sourceSets.main {
+        java.srcDirs += ["${sdl3Src}/android-project/app/src/main/java"]
+        jniLibs.srcDirs = ['libs']        // libmain.so per ABI, from scripts/build_android.sh
+    }
+
+    signingConfigs {
+        release {
+            // Only on the machine that holds the key (never in the repo).
+            if (System.getenv('HERC_KEYSTORE')) {
+                storeFile = file(System.getenv('HERC_KEYSTORE'))
+                storePassword = System.getenv('HERC_KEYSTORE_PASS')
+                keyAlias = 'hercules'
+                keyPassword = System.getenv('HERC_KEYSTORE_PASS')
+            }
+        }
+    }
+    buildTypes {
+        release {
+            minifyEnabled = false
+            if (System.getenv('HERC_KEYSTORE')) signingConfig = signingConfigs.release
+        }
+    }
+    packaging {
+        jniLibs {
+            useLegacyPackaging = false   // stored uncompressed, 16 KB aligned
+            keepDebugSymbols += ['**/libmain.so']   // stripped by the build script already
+        }
+    }
+    lint {
+        abortOnError = false
+    }
+}

@@ -1,0 +1,12 @@
+# assembled by scripts/build_android.sh
+/gradle/
+/gradlew
+/gradlew.bat
+/local.properties
+/.gradle/
+/build/
+/app/build/
+/app/libs/
+/app/src/main/res/mipmap-*/
+/app/src/main/res/values/colors.xml
+/app/src/main/res/values/styles.xml
