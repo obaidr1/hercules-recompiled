@@ -100,7 +100,7 @@ CC BY-NC-SA 4.0; [HDcube](https://github.com/Venomalia/HDcube)). It needs
 | [`decomp/`](decomp) | Decompilation of the main executable and the overlays (splat + GCC 2.7.2 / maspsx, byte-identical rebuild), file-format notes (levels, sprites, videos), tools for extraction, HD upscaling and texture packs |
 | [`port/`](port) | The PC port, built on [psxrecomp](https://github.com/RetroPortingToolKit/psxrecomp): game configuration, game-specific mods (HD sprites, widescreen, level select, skip intro / direct start, NTSC speed) and the launcher |
 | `port/psxrecomp` | Submodule: the upstream framework |
-| [`port/patches/psxrecomp`](port/patches/psxrecomp) | Eleven framework changes this port uses that are not upstream (F3/F4 debug overlays and texture-pack tracking across save states; CRT simulation in the GL present path; a hook that lets the game build in its own launcher; a hook for the game's own in-game menu with live settings; the keyboard alongside the gamepad for Player 1; extra builds per disc release sharing one toolchain; a clean debug-server shutdown; the CRT simulation on blended frames; freezing the F4 inspector's picture to mark objects; semi-transparent draws keeping the original texture; NTSC timing for a PAL game as a mod option) |
+| [`port/patches/psxrecomp`](port/patches/psxrecomp) | Twelve framework changes this port uses that are not upstream (F3/F4 debug overlays and texture-pack tracking across save states; CRT simulation in the GL present path; a hook that lets the game build in its own launcher; a hook for the game's own in-game menu with live settings; the keyboard alongside the gamepad for Player 1; extra builds per disc release sharing one toolchain; a clean debug-server shutdown; the CRT simulation on blended frames; freezing the F4 inspector's picture to mark objects; semi-transparent draws keeping the original texture; NTSC timing for a PAL game as a mod option; an aarch64 overlay-toolchain Python for Linux arm64 releases) |
 
 ## Getting started
 
@@ -127,6 +127,18 @@ cmake -S . -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build-release --target psx-runtime
 python3 launcher/build_assets.py --sd   # launcher art from your disc
 ./hercules-launcher
+```
+
+**Linux arm64** (ARM handhelds, single-board computers): one script matches
+your disc(s) to their releases, generates, builds and packages
+`dist/hercules-<version>-linux-arm64.zip`. It builds natively on an aarch64
+Linux machine; on an x86-64 one it runs itself in an arm64 Debian container
+(docker or podman with qemu binfmt).
+
+```sh
+git clone --recursive https://github.com/obaidr1/hercules-recompiled
+cd hercules-recompiled/port
+scripts/build_linux_arm64.sh "/path/to/Disneys Hercules Action-Spiel (Germany).cue"
 ```
 
 **HD graphics** are made from your disc on your PC (first start of the
