@@ -446,10 +446,11 @@ void write_settings(const Ctx& c) {
     }
     want["video"]["auto_skip_fmv"] = "false";   // hercules.skip-intro's skip-fmv does it (the runtime leaves it to a mod)
 #if defined(__ANDROID__)
-    // OpenGL ES at 1080p (the runtime caps phones at 4x); the video rows are
-    // hidden on Android.
+    // OpenGL ES at 720p (3x): at 1080p ANGLE, Android's default GL driver,
+    // waits on the GPU at every present in some levels and the game falls
+    // below full speed. The video rows are hidden on Android.
     want["video"]["renderer"] = "\"opengl\"";
-    want["video"]["internal_resolution"] = "\"1080p\"";
+    want["video"]["internal_resolution"] = "\"720p\"";
     want["video"]["antialiasing"] = "false";
 #else
     want["video"]["renderer"] = "\"opengl\"";
@@ -512,6 +513,18 @@ fs::path pack_none(const Ctx& c) {
     return p;
 }
 
+// The wide aspect: 16:9, on a phone the screen's own (N:9, 18..21), so the
+// picture fills it.
+int wide_numerator() {
+#if defined(__ANDROID__)
+    if (const SDL_DisplayMode* m = SDL_GetCurrentDisplayMode(SDL_GetPrimaryDisplay())) {
+        const int a = std::max(m->w, m->h), b = std::min(m->w, m->h);
+        if (b > 0) return std::clamp((int)std::lround(9.0 * a / b), 16, 21);
+    }
+#endif
+    return 16;
+}
+
 void write_mod_state(const Ctx& c, const fs::path& chosen, bool new_game) {
     const std::string level = new_game ? c.store.get("start_level") : "off";
     const bool wide = c.store.get("aspect_ratio") == "16:9";
@@ -531,7 +544,8 @@ void write_mod_state(const Ctx& c, const fs::path& chosen, bool new_game) {
     feature("hercules.level-select", "level-select", level == "0");
     t += "\n[feature.values]\nlevel = " + toml_str(level) + "\n";
     feature("hercules.widescreen", "widescreen", true);          // 4:3 too: the menu switches live
-    t += std::string("\n[feature.values]\naspect = ") + toml_str(wide ? "16:9" : "4:3") + "\n";
+    t += std::string("\n[feature.values]\naspect = ") +
+         toml_str(wide ? std::to_string(wide_numerator()) + ":9" : "4:3") + "\n";
     feature("hercules.skip-intro", "skip-intro", c.store.b("skip_intro"));
     feature("hercules.skip-intro", "skip-memcard", c.store.b("skip_memcard"));
     feature("hercules.skip-intro", "skip-fmv", c.store.b("auto_skip_fmv"));   // the runtime leaves it to a mod
@@ -2432,7 +2446,7 @@ void apply(const std::string& key) {
         const std::string v = st.get(key);
         psx_host_set_texture_filter(v == "bilinear" ? 1 : v == "xbr" ? 3 : 0);
     } else if (key == "aspect_ratio") {
-        if (st.get(key) == "16:9") psx_host_set_display_aspect(16, 9);
+        if (st.get(key) == "16:9") psx_host_set_display_aspect(wide_numerator(), 9);
         else psx_host_set_display_aspect(4, 3);
     } else if (key == "fullscreen") {
         psx_host_set_fullscreen(st.get(key) == "0" ? 0 : 1);

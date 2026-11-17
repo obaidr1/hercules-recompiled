@@ -30,6 +30,7 @@
  * `t5 < 21 + 2k`. (Calling the builder repeatedly does not work: its exit
  * splices OT buckets 0x88/0x8C into 0x70/0x7C, which loops on a second call.)
  */
+#include <stdlib.h>
 #include <string.h>
 #include "mod_plugins.h"
 #include "cpu_state.h"
@@ -78,13 +79,18 @@ static void on_hud_sprite(struct CPUState* cpu, uint32_t address) {
     psx_mod_counter_add("hercules.widescreen.hud_anchor", 1);
 }
 
-/* Option "aspect": the start value; the in-game menu switches live. At 4:3
- * the hooks below do nothing (no side margins). */
+/* Option "aspect" ("N:M", e.g. 16:9, or 20:9 to fill a phone): the start
+ * value; the in-game menu switches live. At 4:3 the hooks below do nothing
+ * (no side margins). */
 static void on_activate(void) {
     char aspect[8] = "";
-    const int narrow = psx_mod_current_option_value("aspect", aspect, sizeof(aspect)) &&
-                       strcmp(aspect, "4:3") == 0;
-    if (!psx_mod_set_fixed_display_aspect(narrow ? 4 : 16, narrow ? 3 : 9))
+    unsigned num = 16, den = 9;
+    if (psx_mod_current_option_value("aspect", aspect, sizeof(aspect))) {
+        const char* colon = strchr(aspect, ':');
+        const int n = atoi(aspect), d = colon ? atoi(colon + 1) : 0;
+        if (n > 0 && d > 0) { num = (unsigned)n; den = (unsigned)d; }
+    }
+    if (!psx_mod_set_fixed_display_aspect(num, den))
         psx_mod_counter_add("hercules.widescreen.aspect_refused", 1);
 }
 
