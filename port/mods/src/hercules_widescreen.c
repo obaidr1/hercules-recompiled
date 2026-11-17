@@ -178,7 +178,40 @@ static void on_panorama(struct CPUState* cpu, uint32_t address) {
     psx_mod_counter_add("hercules.widescreen.panorama", 1);
 }
 
+/* The Hydra arena (level 6) is drawn about 1.7 times as wide as high: its
+ * rock wall ends there and the margins of a wider picture show the plain
+ * backdrop. While that level runs, a wider aspect is narrowed to 16:10 (the
+ * window keeps its size, the sides stay black) and given back afterwards --
+ * also the one the player picks in the in-game menu meanwhile. */
+#define HYDRA_LEVEL 6
+static int s_hydra_narrowed;
+static uint32_t s_player_num, s_player_den;
+
+static void on_vblank_hydra(void) {
+    const int in_level = psx_mod_read_word(HERC_E1_DECODE_SITE) == HERC_E1_DECODE_WORD &&
+                         (psx_mod_read_word(HERC_LEVEL & ~3u) >> (8u * (HERC_LEVEL & 3u)) & 0xFFu) == HYDRA_LEVEL;
+    uint32_t n = 0, d = 0;
+    psx_mod_get_display_aspect(&n, &d);
+    if (in_level) {
+        if (s_hydra_narrowed && !(n == 16 && d == 10)) {    /* changed in the menu meanwhile */
+            s_player_num = n; s_player_den = d;
+            s_hydra_narrowed = 0;
+        }
+        if (!s_hydra_narrowed && d && n * 10u > d * 16u) {
+            s_player_num = n; s_player_den = d;
+            if (psx_mod_set_display_aspect_live(16, 10)) {
+                s_hydra_narrowed = 1;
+                psx_mod_counter_add("hercules.widescreen.hydra_narrowed", 1);
+            }
+        }
+    } else if (s_hydra_narrowed) {
+        if (n == 16 && d == 10) (void)psx_mod_set_display_aspect_live(s_player_num, s_player_den);
+        s_hydra_narrowed = 0;
+    }
+}
+
 PSX_MOD_CONSTRUCTOR(hercules_register_widescreen) {
+    (void)psx_mod_register_vblank_plugin("hercules.widescreen", on_vblank_hydra);
     (void)psx_mod_register_activation_plugin("hercules.widescreen", on_activate);
     for (uint32_t i = 0; i < HELPER_COUNT; i++)
         (void)psx_mod_register_instruction_plugin("hercules.widescreen", k_helpers[i].site,
