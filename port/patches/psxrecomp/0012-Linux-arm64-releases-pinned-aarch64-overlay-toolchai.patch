@@ -1,0 +1,104 @@
+From 68a6bb731e584839cb8ca17cc8ff6fde77769ecd Mon Sep 17 00:00:00 2001
+From: Hercules ARM64 <noreply@example.invalid>
+Date: Fri, 30 Oct 2026 18:56:04 +0800
+Subject: [PATCH] Linux arm64 releases: pinned aarch64 overlay-toolchain Python
+
+The Linux release staged an x86_64 python-build-standalone interpreter for every Linux artifact, so a linux-arm64 package would ship an overlay toolchain its own runtime cannot run. Add a linux-arm64 pin (same 3.13.1 release, aarch64 asset), map the linux-arm64 artifact to it, and pick it as the host default on aarch64.
+
+toolchain_pack.host_artifact() also called every Linux host linux-x64, so generate on aarch64 installed the x86_64 cmake-clang pack and then failed to run its cmake. It now says linux-arm64, which has no pack, and the emitter build uses the system cmake/ninja.
+---
+ tools/package_game_release.sh |  1 +
+ tools/release_stage.py        | 22 ++++++++++++++++++++--
+ tools/toolchain_pack.py       |  5 ++++-
+ 3 files changed, 25 insertions(+), 3 deletions(-)
+
+diff --git a/tools/package_game_release.sh b/tools/package_game_release.sh
+index b2d48a9..1ff0dc9 100755
+--- a/tools/package_game_release.sh
++++ b/tools/package_game_release.sh
+@@ -363,6 +363,7 @@ if [[ "${STAGE_OVERLAY_TOOLCHAIN}" -eq 1 ]]; then
+   [[ -n "${GAME_BIN}" ]] || { echo "error: overlay toolchain needs psxrecomp-game under ${RECOMPILER_BUILD} (pass --recompiler-build, or --no-overlay-toolchain)" >&2; exit 1; }
+   case "${ARTIFACT}" in
+     windows-*) platform=win ;;
++    linux-arm64|linux-aarch64) platform=linux-arm64 ;;
+     linux-*)   platform=linux ;;
+     macos-arm64|macos-aarch64) platform=macos-arm64 ;;
+     macos-x64|macos-x86_64)   platform=macos-x64 ;;
+diff --git a/tools/release_stage.py b/tools/release_stage.py
+index 2036452..f7a88fd 100644
+--- a/tools/release_stage.py
++++ b/tools/release_stage.py
+@@ -470,6 +470,20 @@ TOOLCHAIN_PINS = {
+         'tcc_url': None,
+         'tcc_sha256': None,
+     },
++    # Linux on aarch64 (ARM handhelds, SBCs). Same python-build-standalone
++    # release and version as the x86_64 pin; only the asset's triple differs.
++    # SHA256 measured 2026-10-30 by downloading it and matched against the
++    # publisher's .sha256 sidecar asset. No prebuilt tcc, as on x86_64.
++    'linux-arm64': {
++        'python_version': '3.13.1',
++        'python_url': ('https://github.com/astral-sh/python-build-standalone/releases/'
++                       'download/20250115/cpython-3.13.1%2B20250115-aarch64-unknown-'
++                       'linux-gnu-install_only_stripped.tar.gz'),
++        'python_sha256': '852b909cf77f84814d66fe9a373447c57371edbe88a531781e02a2163247572a',
++        'tcc_version': None,
++        'tcc_url': None,
++        'tcc_sha256': None,
++    },
+     # macOS had no pin at all, so stage_toolchain died with "no toolchain pins"
+     # (or, before that check, staged the Linux interpreter) and no Mac player
+     # ever got a bundled toolchain; the stock /usr/bin/python3 on macOS 13/14
+@@ -508,7 +522,8 @@ def host_platform_tag():
+     if sys.platform == 'darwin':
+         import platform
+         return 'macos-arm64' if platform.machine() in ('arm64', 'aarch64') else 'macos-x64'
+-    return 'linux'
++    import platform
++    return 'linux-arm64' if platform.machine() in ('arm64', 'aarch64') else 'linux'
+ 
+ 
+ def get_pinned_archive(url, sha256, destination, retries=4, log=print):
+@@ -617,11 +632,14 @@ def _extract_tar_top_level(archive, parent, expect_top):
+ # platform; the layout does not.
+ TOOLCHAIN_PY_REL = {'win': os.path.join('python', 'python.exe'),
+                     'linux': os.path.join('python', 'bin', 'python3'),
++                    'linux-arm64': os.path.join('python', 'bin', 'python3'),
+                     'macos-x64': os.path.join('python', 'bin', 'python3'),
+                     'macos-arm64': os.path.join('python', 'bin', 'python3')}
+ TOOLCHAIN_RECOMPILER = {'win': 'psxrecomp-game.exe', 'linux': 'psxrecomp-game',
++                        'linux-arm64': 'psxrecomp-game',
+                         'macos-x64': 'psxrecomp-game', 'macos-arm64': 'psxrecomp-game'}
+ TOOLCHAIN_BIOS_EMITTER = {'win': 'psxrecomp-bios.exe', 'linux': 'psxrecomp-bios',
++                          'linux-arm64': 'psxrecomp-bios',
+                           'macos-x64': 'psxrecomp-bios', 'macos-arm64': 'psxrecomp-bios'}
+ 
+ 
+@@ -681,7 +699,7 @@ def stage_toolchain(stage, recomp_dir, recomp_tools, recomp_include, dl_cache,
+         # python-build-standalone: one `python/` top-level directory.
+         _extract_tar_top_level(py_archive, toolchain, 'python')
+ 
+-    if platform_tag == 'linux':
++    if platform_tag in ('linux', 'linux-arm64'):
+         # Standalone Python includes pip's Windows entry-point resources even
+         # in Linux archives. They are data for installing Windows scripts,
+         # never Linux executables. Omit only these six known resources; keep
+diff --git a/tools/toolchain_pack.py b/tools/toolchain_pack.py
+index c2938ca..a468596 100644
+--- a/tools/toolchain_pack.py
++++ b/tools/toolchain_pack.py
+@@ -44,7 +44,10 @@ def host_artifact() -> str:
+         return "windows-x64"
+     if sys.platform == "darwin":
+         return "macos-arm64" if platform.machine().lower() in ("arm64", "aarch64") else "macos-x64"
+-    return "linux-x64"
++    # No linux-arm64 pack is published: name it anyway so download_latest_pack
++    # refuses ("unknown toolchain artifact") and callers fall back to the
++    # system cmake/ninja, instead of installing the x86_64 pack on aarch64.
++    return "linux-arm64" if platform.machine().lower() in ("arm64", "aarch64") else "linux-x64"
+ 
+ 
+ def cmake_name() -> str:
+-- 
+2.56.0.windows.4
+
