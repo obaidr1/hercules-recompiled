@@ -85,7 +85,8 @@ target_sources(psx-runtime PRIVATE
     "${HERC_ROOT}/mods/src/hercules_skip_intro.c"
     "${HERC_ROOT}/mods/src/hercules_widescreen.c"
     "${HERC_ROOT}/mods/src/hercules_frame_blend.c"
-    "${HERC_ROOT}/mods/src/hercules_ntsc_speed.c")
+    "${HERC_ROOT}/mods/src/hercules_ntsc_speed.c"
+    "${HERC_ROOT}/mods/src/hercules_events.c")
 target_include_directories(psx-runtime PRIVATE "${HERC_VERSION_DIR}")
 
 # The launcher, compiled into the game executable (psx_game_launcher.h): a
