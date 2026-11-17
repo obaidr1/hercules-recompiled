@@ -525,6 +525,26 @@ std::string json_field(const std::string& j, const std::string& key) {
 }
 
 // Release notes (Markdown) as plain lines for the game's font.
+// A release text may carry one section per language after the English one,
+// each under its own heading ("## Deutsch", "## Français", ...): the player's
+// language gets its section, everyone else the English part.
+std::string notes_for(const std::string& md, const std::string& lang) {
+    static const std::map<std::string, std::string> heads = {
+        {"## Deutsch", "de"}, {"## Français", "fr"}, {"## Español", "es"}, {"## Italiano", "it"}, {"## English", "en"}};
+    std::map<std::string, std::string> parts;
+    std::string cur = "en";
+    std::istringstream in(md);
+    for (std::string line; std::getline(in, line);) {
+        std::string l = line;
+        while (!l.empty() && (l.back() == '\r' || l.back() == ' ')) l.pop_back();
+        const auto h = heads.find(l);
+        if (h != heads.end()) { cur = h->second; continue; }
+        parts[cur] += line + "\n";
+    }
+    const auto it = parts.find(lang);
+    return it != parts.end() ? it->second : parts["en"];
+}
+
 std::string plain_notes(const std::string& md) {
     std::string out;
     std::istringstream in(md);
@@ -2032,7 +2052,7 @@ void App::upd_tick() {
         if (json_field(j, "state") != "ok") return;               // offline: say nothing
         upd_newer = json_field(j, "newer") == "true";
         upd_latest = json_field(j, "latest");
-        upd_notes = plain_notes(json_field(j, "notes"));
+        upd_notes = plain_notes(notes_for(json_field(j, "notes"), lang()));
         if (upd_newer && ctx.store.get("update_seen") != upd_latest && screen == &g_main) {
             g_update.choice = 0;
             g_update.scroll = 0;
