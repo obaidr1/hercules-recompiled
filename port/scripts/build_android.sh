@@ -28,6 +28,18 @@ for abi in "${ABIS[@]}"; do
   "$STRIP" --strip-unneeded -o "android/app/libs/$abi/libmain.so" "$b/libHercules_Recompiled.so"
 done
 
+# The runtime's own files (the same for every ABI) as APK assets under runtime/:
+# files.txt lists them, stamp.txt hashes them; the app writes them into its
+# files folder when the stamp changes (main.cpp android_install_runtime_files).
+# Never the disc or anything the player owns.
+R=android/app/src/main/assets/runtime
+rm -rf "$R" && mkdir -p "$R"
+(cd "build-android-${ABIS[0]}" && cp -r --parents assets bios game.toml game_options.toml \
+   psx_game_version.txt mods/README.md mods/bundled "$ROOT/$R/")
+(cd "$R" && find . -type f ! -name files.txt ! -name stamp.txt | sed 's#^\./##' | LC_ALL=C sort > files.txt &&
+   xargs -d '\n' sha256sum < files.txt | sha256sum | cut -c1-16 > stamp.txt)
+echo "runtime files: $(wc -l < "$R/files.txt"), stamp $(cat "$R/stamp.txt")"
+
 # Gradle wrapper and placeholder icons/theme from SDL3's android-project.
 T="$SDL3_SRC/android-project"
 cp -r "$T/gradle" "$T/gradlew" android/
