@@ -86,9 +86,18 @@ CC BY-NC-SA 4.0; [HDcube](https://github.com/Venomalia/HDcube)). It needs
   60 fps is not possible: both the PAL and the US game wait a fixed two video
   frames per step, and generated in-between frames (blending, optical flow,
   AI interpolation) were tried and looked worse than the original pictures.
-- **Widescreen.** In 16:9 the game draws the extra width itself: scenery,
-  far background and the HUD at the screen edges, and from 0.5.4 also the
-  characters and objects in the side margins.
+- **Widescreen.** In 16:9 and 21:9 the game draws the extra width itself:
+  scenery, far background and the HUD at the screen edges, and from 0.5.4
+  also the characters and objects in the side margins. The Hydra arena is
+  shown at 16:10 at most, because its walls end there.
+- **Privacy.** From 0.5.7 the game writes what happens while you play (items
+  collected, levels finished, game overs, difficulty) to
+  `hercules_events.jsonl` in the game folder; we use it to add achievements.
+  It is only sent if you agree: the launcher asks once, the default is no,
+  and *General → Send game data* changes it at any time. What is sent: those
+  events, the game version, your disc's ID, Windows/Linux and a random number
+  made for your installation. No name, no account, no IP address is stored.
+  It goes to our own server in Germany and is not shared with anyone.
 - **Problems?** Open an [issue](https://github.com/obaidr1/hercules-recompiled/issues)
   with the version (shown in the launcher), your disc's ID (SCES-0089x),
   Windows or Linux, and a screenshot if you can.
