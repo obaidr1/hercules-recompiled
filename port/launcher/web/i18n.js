@@ -35,6 +35,7 @@ const STR = {
              "DIE HYDRA", "DIE GROTTE DER MEDUSA", "KAMPF DEM ZYKLOPEN!", "DER FLUG DER TITANEN",
              "DER SCHLUND DER UNENDLICHEN QUALEN", "IM SOG DER SEELEN"],
     on: "AN", off: "AUS",
+    consent: { title: "SPIELDATEN TEILEN?", text: "DARF HERCULES ANONYM MITSCHICKEN, WAS DU IM SPIEL SAMMELST UND SCHAFFST? KEINE PERSÖNLICHEN DATEN, KEINE IP-ADRESSE. DAS HILFT UNS, ERFOLGE EINZUBAUEN. JEDERZEIT IN DEN OPTIONEN ÄNDERBAR.", yes: "JA, SENDEN", no: "NEIN" },
     upd: { available: "UPDATE {v} VERFÜGBAR", title: "UPDATE {v}", install: "INSTALLIEREN", later: "SPÄTER", restart: "NEU STARTEN", loading: "LADE UPDATE {p} %", failed: "UPDATE FEHLGESCHLAGEN. SPÄTER NOCHMAL VERSUCHEN.", done: "AKTUALISIERT AUF {v}. VIEL SPASS!" },
     kb: { up: "OBEN", down: "UNTEN", left: "LINKS", right: "RECHTS", cross: "X", circle: "○", square: "□", triangle: "△", l1: "L1", r1: "R1", l2: "L2", r2: "R2", start: "START", select: "SELECT", press: "TASTE DRÜCKEN - ESC: ABBRECHEN", reset: "STANDARD WIEDERHERSTELLEN" },
     ingame: {
@@ -46,7 +47,7 @@ const STR = {
       touch: "TOUCH", general: "ALLGEMEIN", pause: "PAUSE", keys: "TASTEN", hotkeys: "KÜRZEL", video: "BILD", gfx: "GRAFIK", filter: "FILTER", sound: "TON",
     },
     opt: {
-      language: "SPRACHE", volume: "LAUTSTÄRKE", fast_cd: "SCHNELL LADEN", updates: "AUTO-UPDATES", frame_blend: "BILDGLÄTTUNG",
+      language: "SPRACHE", volume: "LAUTSTÄRKE", fast_cd: "SCHNELL LADEN", updates: "AUTO-UPDATES", share_events: "SPIELDATEN SENDEN", frame_blend: "BILDGLÄTTUNG",
       hd_build: "HD-GRAFIKEN",
       internal_resolution: "AUFLÖSUNG", aspect_ratio: "FORMAT", fullscreen: "ANZEIGE", vsync: "BILDSYNC",
       preset: "STIL", hd_sprites: "HD FIGUREN", hd_levels: "HD LANDSCHAFT", hd_hud: "HD ANZEIGEN",
@@ -87,6 +88,7 @@ const STR = {
              "HYDRA CANYON", "MEDUSA'S LAIR", "CYCLOPS ATTACK", "TITAN FLIGHT",
              "PASSAGEWAYS OF ETERNAL TORMENT", "VORTEX OF SOULS"],
     on: "ON", off: "OFF",
+    consent: { title: "SHARE GAME DATA?", text: "MAY HERCULES SEND ANONYMOUSLY WHAT YOU COLLECT AND ACHIEVE IN THE GAME? NO PERSONAL DATA, NO IP ADDRESS. IT HELPS US ADD ACHIEVEMENTS. YOU CAN CHANGE THIS ANY TIME IN THE OPTIONS.", yes: "YES, SEND", no: "NO" },
     upd: { available: "UPDATE {v} AVAILABLE", title: "UPDATE {v}", install: "INSTALL", later: "LATER", restart: "RESTART", loading: "DOWNLOADING {p} %", failed: "UPDATE FAILED. PLEASE TRY AGAIN LATER.", done: "UPDATED TO {v}. HAVE FUN!" },
     kb: { up: "UP", down: "DOWN", left: "LEFT", right: "RIGHT", cross: "X", circle: "○", square: "□", triangle: "△", l1: "L1", r1: "R1", l2: "L2", r2: "R2", start: "START", select: "SELECT", press: "PRESS A KEY - ESC: CANCEL", reset: "RESET TO DEFAULTS" },
     ingame: {
@@ -96,7 +98,7 @@ const STR = {
     },
     pages: { touch: "TOUCH", general: "GENERAL", pause: "PAUSE", keys: "CONTROLS", hotkeys: "SHORTCUTS", video: "DISPLAY", gfx: "GRAPHICS", filter: "FILTERS", sound: "SOUND" },
     opt: {
-      language: "LANGUAGE", volume: "VOLUME", fast_cd: "FAST LOADING", updates: "AUTO UPDATES", frame_blend: "FRAME BLEND",
+      language: "LANGUAGE", volume: "VOLUME", fast_cd: "FAST LOADING", updates: "AUTO UPDATES", share_events: "SEND GAME DATA", frame_blend: "FRAME BLEND",
       hd_build: "HD GRAPHICS",
       internal_resolution: "RESOLUTION", aspect_ratio: "ASPECT", fullscreen: "MODE", vsync: "VSYNC",
       preset: "STYLE", hd_sprites: "HD CHARACTERS", hd_levels: "HD SCENERY", hd_hud: "HD DISPLAY",
@@ -137,6 +139,7 @@ const STR = {
              "LE CANYON DE L'HYDRE", "L'ANTRE DE MÉDUSE", "L'ATTAQUE DU CYCLOPE", "LE VOL DES TITANS",
              "LES COULOIRS DU TOURMENT ÉTERNEL", "LE TOURBILLON DES ÂMES"],
     on: "OUI", off: "NON",
+    consent: { title: "PARTAGER LES DONNÉES ?", text: "HERCULES PEUT-IL ENVOYER ANONYMEMENT CE QUE TU RAMASSES ET ACCOMPLIS DANS LE JEU ? AUCUNE DONNÉE PERSONNELLE, AUCUNE ADRESSE IP. CELA NOUS AIDE À AJOUTER DES SUCCÈS. MODIFIABLE À TOUT MOMENT DANS LES OPTIONS.", yes: "OUI, ENVOYER", no: "NON" },
     upd: { available: "MISE À JOUR {v} DISPONIBLE", title: "MISE À JOUR {v}", install: "INSTALLER", later: "PLUS TARD", restart: "REDÉMARRER", loading: "TÉLÉCHARGEMENT {p} %", failed: "ÉCHEC DE LA MISE À JOUR. RÉESSAIE PLUS TARD.", done: "MIS À JOUR EN {v}. AMUSE-TOI BIEN!" },
     kb: { up: "HAUT", down: "BAS", left: "GAUCHE", right: "DROITE", cross: "X", circle: "○", square: "□", triangle: "△", l1: "L1", r1: "R1", l2: "L2", r2: "R2", start: "START", select: "SELECT", press: "APPUIE SUR UNE TOUCHE - ÉCHAP: ANNULER", reset: "RÉTABLIR PAR DÉFAUT" },
     ingame: {
@@ -146,7 +149,7 @@ const STR = {
     },
     pages: { touch: "TACTILE", general: "GÉNÉRAL", pause: "PAUSE", keys: "TOUCHES", hotkeys: "RACCOURCIS", video: "AFFICHAGE", gfx: "GRAPHISMES", filter: "FILTRES", sound: "SON" },
     opt: {
-      language: "LANGUE", volume: "VOLUME", fast_cd: "CHARGEMENT RAPIDE", updates: "MISES À JOUR", frame_blend: "FONDU D'IMAGES",
+      language: "LANGUE", volume: "VOLUME", fast_cd: "CHARGEMENT RAPIDE", updates: "MISES À JOUR", share_events: "ENVOYER LES DONNÉES", frame_blend: "FONDU D'IMAGES",
       hd_build: "GRAPHISMES HD",
       internal_resolution: "RÉSOLUTION", aspect_ratio: "FORMAT", fullscreen: "MODE", vsync: "SYNCHRO",
       preset: "STYLE", hd_sprites: "PERSONNAGES HD", hd_levels: "DÉCORS HD", hd_hud: "INTERFACE HD",
@@ -187,6 +190,7 @@ const STR = {
              "EL CAÑÓN DE LA HIDRA", "LA GUARIDA DE MEDUSA", "EL ATAQUE DEL CÍCLOPE", "EL VUELO DE LOS TITANES",
              "LOS PASILLOS DEL TORMENTO ETERNO", "EL VÓRTICE DE LAS ALMAS"],
     on: "SÍ", off: "NO",
+    consent: { title: "COMPARTIR DATOS", text: "PUEDE HERCULES ENVIAR DE FORMA ANÓNIMA LO QUE RECOGES Y LOGRAS EN EL JUEGO? SIN DATOS PERSONALES NI DIRECCIÓN IP. NOS AYUDA A AÑADIR LOGROS. PUEDES CAMBIARLO EN LAS OPCIONES CUANDO QUIERAS.", yes: "SÍ, ENVIAR", no: "NO" },
     upd: { available: "ACTUALIZACIÓN {v} DISPONIBLE", title: "ACTUALIZACIÓN {v}", install: "INSTALAR", later: "MÁS TARDE", restart: "REINICIAR", loading: "DESCARGANDO {p} %", failed: "LA ACTUALIZACIÓN FALLÓ. INTÉNTALO MÁS TARDE.", done: "ACTUALIZADO A {v}. ¡DIVIÉRTETE!" },
     kb: { up: "ARRIBA", down: "ABAJO", left: "IZQUIERDA", right: "DERECHA", cross: "X", circle: "○", square: "□", triangle: "△", l1: "L1", r1: "R1", l2: "L2", r2: "R2", start: "START", select: "SELECT", press: "PULSA UNA TECLA - ESC: CANCELAR", reset: "RESTABLECER" },
     ingame: {
@@ -196,7 +200,7 @@ const STR = {
     },
     pages: { touch: "TÁCTIL", general: "GENERAL", pause: "PAUSA", keys: "CONTROLES", hotkeys: "ATAJOS", video: "PANTALLA", gfx: "GRÁFICOS", filter: "FILTROS", sound: "SONIDO" },
     opt: {
-      language: "IDIOMA", volume: "VOLUMEN", fast_cd: "CARGA RÁPIDA", updates: "ACTUALIZACIONES", frame_blend: "FUSIÓN DE IMÁGENES",
+      language: "IDIOMA", volume: "VOLUMEN", fast_cd: "CARGA RÁPIDA", updates: "ACTUALIZACIONES", share_events: "ENVIAR DATOS", frame_blend: "FUSIÓN DE IMÁGENES",
       hd_build: "GRÁFICOS HD",
       internal_resolution: "RESOLUCIÓN", aspect_ratio: "FORMATO", fullscreen: "MODO", vsync: "SINCRONÍA",
       preset: "ESTILO", hd_sprites: "PERSONAJES HD", hd_levels: "ESCENARIOS HD", hd_hud: "MARCADORES HD",
@@ -237,6 +241,7 @@ const STR = {
              "IL CANYON DELL'IDRA", "IL COVO DI MEDUSA", "L'ATTACCO DEL CICLOPE", "IL VOLO DEI TITANI",
              "I CORRIDOI DEL TORMENTO ETERNO", "IL VORTICE DELLE ANIME"],
     on: "SÌ", off: "NO",
+    consent: { title: "CONDIVIDERE I DATI?", text: "HERCULES PUÒ INVIARE IN FORMA ANONIMA CIÒ CHE RACCOGLI E OTTIENI NEL GIOCO? NESSUN DATO PERSONALE, NESSUN INDIRIZZO IP. CI AIUTA AD AGGIUNGERE OBIETTIVI. PUOI CAMBIARLO IN QUALSIASI MOMENTO NELLE OPZIONI.", yes: "SÌ, INVIA", no: "NO" },
     upd: { available: "AGGIORNAMENTO {v} DISPONIBILE", title: "AGGIORNAMENTO {v}", install: "INSTALLA", later: "PIÙ TARDI", restart: "RIAVVIA", loading: "SCARICAMENTO {p} %", failed: "AGGIORNAMENTO NON RIUSCITO. RIPROVA PIÙ TARDI.", done: "AGGIORNATO ALLA {v}. BUON DIVERTIMENTO!" },
     kb: { up: "SU", down: "GIÙ", left: "SINISTRA", right: "DESTRA", cross: "X", circle: "○", square: "□", triangle: "△", l1: "L1", r1: "R1", l2: "L2", r2: "R2", start: "START", select: "SELECT", press: "PREMI UN TASTO - ESC: ANNULLA", reset: "RIPRISTINA PREDEFINITI" },
     ingame: {
@@ -246,7 +251,7 @@ const STR = {
     },
     pages: { touch: "TOUCH", general: "GENERALE", pause: "PAUSA", keys: "COMANDI", hotkeys: "SCORCIATOIE", video: "SCHERMO", gfx: "GRAFICA", filter: "FILTRI", sound: "AUDIO" },
     opt: {
-      language: "LINGUA", volume: "VOLUME", fast_cd: "CARICAMENTO RAPIDO", updates: "AGGIORNAMENTI", frame_blend: "FUSIONE IMMAGINI",
+      language: "LINGUA", volume: "VOLUME", fast_cd: "CARICAMENTO RAPIDO", updates: "AGGIORNAMENTI", share_events: "INVIA DATI DI GIOCO", frame_blend: "FUSIONE IMMAGINI",
       hd_build: "GRAFICA HD",
       internal_resolution: "RISOLUZIONE", aspect_ratio: "FORMATO", fullscreen: "MODALITÀ", vsync: "VSYNC",
       preset: "STILE", hd_sprites: "PERSONAGGI HD", hd_levels: "SCENARI HD", hd_hud: "INDICATORI HD",

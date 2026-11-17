@@ -17,10 +17,12 @@
 #include <fstream>
 #include <functional>
 #include <map>
+#include <random>
 #include <set>
 #include <sstream>
 #include <string>
 #include <system_error>
+#include <thread>
 #include <vector>
 
 #include "hl_data.h"
@@ -174,6 +176,7 @@ const Setting kSettings[] = {
     {"skip_intro", "b", "true"}, {"skip_memcard", "b", "true"}, {"language", "s", ""}, {"fast_cd", "b", "true"},
     {"updates", "b", "true"}, {"frame_blend", "s", "off"}, {"ntsc_speed", "b", "true"},
     {"touch_show", "b", "true"}, {"touch_size", "s", "100"}, {"touch_alpha", "s", "70"}, {"touch_pos", "s", "low"},
+    {"share_events", "s", "ask"}, {"install_id", "s", ""},
 };
 const char* const kVideoKeys[] = {"internal_resolution", "window_width", "fullscreen", "aspect_ratio", "vsync",
                                   "texture_filtering", "antialiasing", "crt_filter", "scanlines",
@@ -367,6 +370,123 @@ HdStatus hd_read(const Ctx& c) {
 // release, downloads and checks it, and swaps the program files after the
 // launcher has quit; the player's files are never in the zip.
 fs::path upd_dir(const Ctx& c) { return c.exe_dir / "update"; }
+
+// ------------------------------------------------------------- event log
+// The hercules.events mod writes hercules_events.jsonl next to the game. With
+// the player's consent (share_events = yes) the launcher sends it at its
+// start, in batches; what could not be sent waits for the next start.
+// Receiver: HerculesRecomp/tools/events_server.
+constexpr const char* kEventsUrl = "https://hercules.zidrainvest.com/v1/events";
+constexpr size_t kEventsBatchBytes = 200 * 1024, kEventsBatchLines = 4000;
+
+#if defined(__ANDROID__)
+// HerculesActivity.postJson(url, body): the HTTP status, 0 without a connection.
+int events_post(const std::string& body, const fs::path&, const fs::path&) {
+    JNIEnv* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
+    jobject act = static_cast<jobject>(SDL_GetAndroidActivity());
+    if (!env || !act) return 0;
+    int code = 0;
+    jclass cls = env->GetObjectClass(act);
+    jmethodID m = cls ? env->GetStaticMethodID(cls, "postJson", "(Ljava/lang/String;Ljava/lang/String;)I") : nullptr;
+    if (m) {
+        jstring u = env->NewStringUTF(kEventsUrl), b = env->NewStringUTF(body.c_str());
+        code = env->CallStaticIntMethod(cls, m, u, b);
+        env->DeleteLocalRef(u);
+        env->DeleteLocalRef(b);
+    }
+    if (env->ExceptionCheck()) { env->ExceptionClear(); code = 0; }
+    env->DeleteLocalRef(act);
+    if (cls) env->DeleteLocalRef(cls);
+    return code;
+}
+#else
+// update/events_post.py with the bundled Python: exit 0 sent, 2 refused by
+// the receiver (the batch is dropped), anything else: try again later.
+int events_post(const std::string& body, const fs::path& py, const fs::path& dir) {
+    const fs::path script = dir / "update" / "events_post.py", batch = dir / "hercules_events.batch.json";
+    if (!fs::exists(py) || !fs::exists(script)) return 0;
+    { std::ofstream f(batch, std::ios::binary | std::ios::trunc); f << body; if (!f) return 0; }
+    const std::string a_py = py.u8string(), a_script = script.u8string(), a_batch = batch.u8string();
+    const char* args[] = {a_py.c_str(), a_script.c_str(), kEventsUrl, a_batch.c_str(), nullptr};
+    SDL_PropertiesID props = SDL_CreateProperties();
+    SDL_SetPointerProperty(props, SDL_PROP_PROCESS_CREATE_ARGS_POINTER, (void*)args);
+    SDL_SetNumberProperty(props, SDL_PROP_PROCESS_CREATE_STDIN_NUMBER, SDL_PROCESS_STDIO_NULL);
+    SDL_SetNumberProperty(props, SDL_PROP_PROCESS_CREATE_STDOUT_NUMBER, SDL_PROCESS_STDIO_NULL);
+    SDL_SetNumberProperty(props, SDL_PROP_PROCESS_CREATE_STDERR_NUMBER, SDL_PROCESS_STDIO_NULL);
+    SDL_SetBooleanProperty(props, SDL_PROP_PROCESS_CREATE_BACKGROUND_BOOLEAN, true);
+    SDL_Process* proc = SDL_CreateProcessWithProperties(props);
+    SDL_DestroyProperties(props);
+    int exitcode = -1;
+    if (proc) { SDL_WaitProcess(proc, true, &exitcode); SDL_DestroyProcess(proc); }
+    std::error_code ec;
+    fs::remove(batch, ec);
+    return exitcode == 0 ? 200 : exitcode == 2 ? 400 : 0;
+}
+#endif
+
+std::string random_install_id() {
+    std::random_device rd;
+    static const char* hex = "0123456789abcdef";
+    std::string s;
+    for (int i = 0; i < 32; ++i) s += hex[rd() & 15];
+    return s;
+}
+
+// Runs on its own thread: everything it needs is passed by value.
+void events_upload(fs::path dir, std::string install, fs::path py) {
+    const fs::path live = dir / "hercules_events.jsonl", moving = dir / "hercules_events.moving.jsonl",
+                   pend = dir / "hercules_events.sending.jsonl";
+    std::error_code ec;
+    // the game starts a new file; the moved lines join those still waiting
+    if (!fs::exists(moving, ec) && fs::exists(live, ec)) fs::rename(live, moving, ec);
+    if (fs::exists(moving, ec)) {
+        std::ifstream in(moving, std::ios::binary);
+        std::ofstream out(pend, std::ios::binary | std::ios::app);
+        out << in.rdbuf();
+        out.close();
+        in.close();
+        if (out) fs::remove(moving, ec);
+    }
+    std::vector<std::string> lines;
+    {
+        std::ifstream in(pend, std::ios::binary);
+        for (std::string l; std::getline(in, l);) {
+            while (!l.empty() && (l.back() == '\r' || l.back() == ' ')) l.pop_back();
+            if (l.size() > 2 && l.front() == '{' && l.back() == '}') lines.push_back(l);   // a cut-off line is dropped
+        }
+    }
+    if (lines.empty()) { fs::remove(pend, ec); return; }
+    std::string version = "unknown";
+    { std::ifstream f(dir / "psx_game_version.txt"); std::string v; if (std::getline(f, v) && !v.empty()) version = v; }
+    while (!version.empty() && (version.back() == '\r' || version.back() == ' ')) version.pop_back();
+#if defined(__ANDROID__)
+    const char* platform = "android";
+#elif defined(_WIN32)
+    const char* platform = "windows";
+#elif defined(__APPLE__)
+    const char* platform = "macos";
+#else
+    const char* platform = "linux";
+#endif
+    size_t i = 0;
+    while (i < lines.size()) {
+        std::string body = std::string("{\"install\":\"") + install + "\",\"app_version\":\"" + version +
+                           "\",\"platform\":\"" + platform + "\",\"events\":[";
+        size_t n = 0;
+        while (i + n < lines.size() && n < kEventsBatchLines && body.size() + lines[i + n].size() < kEventsBatchBytes) {
+            if (n) body += ',';
+            body += lines[i + n++];
+        }
+        if (!n) { ++i; continue; }                  // one line alone too big: drop it
+        body += "]}";
+        const int code = events_post(body, py, dir);
+        if (code == 200 || code == 400 || code == 413) i += n;   // sent, or refused for good
+        else break;                                              // offline, rate limit: later
+    }
+    if (i >= lines.size()) { fs::remove(pend, ec); return; }
+    std::ofstream out(pend, std::ios::binary | std::ios::trunc);
+    for (; i < lines.size(); ++i) out << lines[i] << '\n';
+}
 
 // A JSON string or literal by key (one level; enough for the updater's files).
 std::string json_field(const std::string& j, const std::string& key) {
@@ -897,7 +1017,16 @@ struct App {
         ctx.store.kv[k] = v;
         ctx.store.save();
         if (k == "language") switch_release();
+        if (k == "share_events" && v == "yes") events_start();
     }
+    // Sends the event log in the background when the player agreed (once per run).
+    void events_start() {
+        if (events_started || ctx.store.get("share_events") != "yes") return;
+        if (ctx.store.get("install_id").size() != 32) { ctx.store.kv["install_id"] = random_install_id(); ctx.store.save(); }
+        events_started = true;
+        std::thread(events_upload, ctx.exe_dir, ctx.store.get("install_id"), hd_python(ctx)).detach();
+    }
+    bool events_started = false;
     // The disc art (captions, level names, menu words) is in its disc's
     // language; elsewhere the texts are drawn in the font.
     std::string art_lang;
@@ -976,8 +1105,16 @@ struct UpdateScreen : Screen {
     void key(App& a, Key k) override;
 };
 
+// First start: may the event log be sent (share_events)? Default no.
+struct ConsentScreen : Screen {
+    int choice = 1;
+    void render(App& a) override;
+    void key(App& a, Key k) override;
+};
+
 MainMenu g_main;
 UpdateScreen g_update;
+ConsentScreen g_consent;
 LevelScreen g_levels;
 OptionsScreen g_options;
 LoadScreen g_load;
@@ -1161,7 +1298,8 @@ std::vector<std::pair<std::string, std::vector<Row>>> all_pages() {
     for (const auto& l : kLangs) langs.push_back({l.code, std::string("=") + l.name});
     return {
         {"general", {{"language", langs}, {"skip_intro", {{"false", "show"}, {"true", "skip"}}},
-                     {"ntsc_speed", {{"false", "=PAL"}, {"true", "=NTSC"}}}, {"updates", kOnOff}}},
+                     {"ntsc_speed", {{"false", "=PAL"}, {"true", "=NTSC"}}}, {"updates", kOnOff},
+                     {"share_events", {{"no", "off"}, {"yes", "on"}}}}},
         {"video", {{"internal_resolution", {{"native", "native"}, {"720p", "=720P"}, {"1080p", "=1080P"},
                                             {"1440p", "=1440P"}, {"4k", "=4K"}}},
                    {"aspect_ratio",
@@ -1666,7 +1804,8 @@ std::vector<ScriptStep> parse_script() {
 
 void App::run() {
     t0 = SDL_GetTicks();
-    screen = &g_main;
+    screen = ctx.store.get("share_events") == "ask" ? static_cast<Screen*>(&g_consent) : &g_main;
+    events_start();
     auto script = parse_script();
     size_t next_step = 0;
     std::string pending_shot;
@@ -1947,6 +2086,27 @@ void App::upd_restart() {
 void App::upd_line(float y) {
     text(T("upd.available", {{"v", upd_latest}}), W / 2.0f, y, "yellow", "center", 0.8f);
     hit(40, y, 240, 20, [] {}, [this] { g_update.choice = 0; g_update.scroll = 0; go(&g_update); });
+}
+
+void ConsentScreen::render(App& a) {
+    a.backdrop(a.art.bg["plaster"]);
+    a.text(a.T("consent.title"), W / 2.0f, 20, "yellow", "center");
+    const float f = 0.6f, lh = 14.0f;
+    const auto lines = a.wrap(a.T("consent.text"), 280, f);
+    for (size_t i = 0; i < lines.size(); ++i) a.text(lines[i], W / 2.0f, 62 + float(i) * lh, "yellow", "center", f);
+    const std::string opts[2] = {a.T("consent.yes"), a.T("consent.no")};
+    for (int i = 0; i < 2; ++i) {
+        const float x = i == 0 ? 95 : 225;
+        a.text(opts[i], x, 205, i == choice ? "blue" : "orange", "center", 0.8f);
+        a.hit(x - 65, 203, 130, 22, [this, i] { choice = i; }, [this, &a, i] { choice = i; key(a, Key::Ok); });
+    }
+}
+void ConsentScreen::key(App& a, Key k) {
+    if (k == Key::Left || k == Key::Right) choice = 1 - choice;
+    else if (k == Key::Ok || k == Key::Back) {
+        a.set("share_events", k == Key::Ok && choice == 0 ? "yes" : "no");
+        a.screen = &g_main;
+    }
 }
 
 void UpdateScreen::render(App& a) {

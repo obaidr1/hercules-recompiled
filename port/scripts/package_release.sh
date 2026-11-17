@@ -83,6 +83,7 @@ TOOLS = ["hd_pack_build.py", "iso_extract.py", "sprites.py", "cut_textures.py", 
 with zipfile.ZipFile(zip_path, "a", zipfile.ZIP_DEFLATED) as z:
     z.write(auto, "hd/hd_auto.py")
     z.write(auto.parent.parent / "update" / "updater.py", "update/updater.py")   # in-place updates
+    z.write(auto.parent.parent / "update" / "events_post.py", "update/events_post.py")   # event log upload
     for t in TOOLS:
         z.write(tools / t, f"hd/tools/{t}")
 print(f"added hd/ ({len(TOOLS)} tools) and update/ to {zip_path}")
