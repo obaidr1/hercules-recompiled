@@ -297,7 +297,7 @@ const PAGES = [
   ]],
   ["video", [
     ["internal_resolution", [["native", "native"], ["720p", "=720P"], ["1080p", "=1080P"], ["1440p", "=1440P"], ["4k", "=4K"]]],
-    ["aspect_ratio", [["4:3", "ratio43"], ["16:9", "ratio169"]]],
+    ["aspect_ratio", [["4:3", "ratio43"], ["16:9", "ratio169"], ["21:9", "ratio219"]]],
     ["fullscreen", [[0, "window"], [1, "full"], [2, "exclusive"]]],
     ["vsync", [["on", "on"], ["adaptive", "adaptive"], ["vrr", "=VRR"], ["off", "off"]]],
     ["preset", [["original", "p_original"], ["hd", "p_hd"], ["custom", "p_custom"]]],

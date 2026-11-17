@@ -513,26 +513,26 @@ fs::path pack_none(const Ctx& c) {
     return p;
 }
 
-// The wide aspect: 16:9, on a phone the screen's own (N:9, 18..21), so the
-// picture fills it.
-int wide_numerator() {
+// The wide aspect: the chosen 16:9 or 21:9; on a phone always the screen's
+// own (N:9, 18..21), so the picture fills it.
+int wide_numerator(const std::string& choice) {
 #if defined(__ANDROID__)
     if (const SDL_DisplayMode* m = SDL_GetCurrentDisplayMode(SDL_GetPrimaryDisplay())) {
         const int a = std::max(m->w, m->h), b = std::min(m->w, m->h);
         if (b > 0) return std::clamp((int)std::lround(9.0 * a / b), 16, 21);
     }
 #endif
-    return 16;
+    return choice == "21:9" ? 21 : 16;
 }
 
 void write_mod_state(const Ctx& c, const fs::path& chosen, bool new_game) {
     const std::string level = new_game ? c.store.get("start_level") : "off";
-    const bool wide = c.store.get("aspect_ratio") == "16:9";
+    const bool wide = c.store.get("aspect_ratio") != "4:3";
     const fs::path pack = !chosen.empty() ? chosen : hd_pack_ready(c) ? pack_none(c) : fs::path{};
     std::string t = "format_version = 2\n";
     for (const char* p : {"hercules.hd-sprites", "psx.enhancement.hd-textures", "hercules.level-select",
                           "hercules.widescreen", "hercules.skip-intro", "psx.enhancement.cd-speed",
-                          "hercules.frame-blend"})
+                          "hercules.frame-blend", "hercules.events"})
         t += std::string("\n[[package]]\nid = \"") + p + "\"\n";
     auto feature = [&](const char* pkg, const char* id, bool on) {
         t += std::string("\n[[feature]]\npackage_id = \"") + pkg + "\"\nid = \"" + id + "\"\nenabled = " +
@@ -545,7 +545,7 @@ void write_mod_state(const Ctx& c, const fs::path& chosen, bool new_game) {
     t += "\n[feature.values]\nlevel = " + toml_str(level) + "\n";
     feature("hercules.widescreen", "widescreen", true);          // 4:3 too: the menu switches live
     t += std::string("\n[feature.values]\naspect = ") +
-         toml_str(wide ? std::to_string(wide_numerator()) + ":9" : "4:3") + "\n";
+         toml_str(wide ? std::to_string(wide_numerator(c.store.get("aspect_ratio"))) + ":9" : "4:3") + "\n";
     feature("hercules.skip-intro", "skip-intro", c.store.b("skip_intro"));
     feature("hercules.skip-intro", "skip-memcard", c.store.b("skip_memcard"));
     feature("hercules.skip-intro", "skip-fmv", c.store.b("auto_skip_fmv"));   // the runtime leaves it to a mod
@@ -553,6 +553,7 @@ void write_mod_state(const Ctx& c, const fs::path& chosen, bool new_game) {
     feature("hercules.skip-intro", "direct-start", new_game);
     t += "\n[feature.values]\nlevel = " + toml_str(level == "off" || level == "0" ? "1" : level) + "\n";
     feature("hercules.skip-intro", "launcher-return", true);     // game over: back to the launcher
+    feature("hercules.events", "event-log", true);               // local file; sent only with consent
     // Faster emulated CD (4x: a level's ~2 MB in ~2 s instead of ~8 s) breaks
     // the HD pack: the level textures (and sprite banks loaded mid-level) stay
     // SD. Off for everyone, whatever launcher.ini says (0.4.0/0.5.0 stored
@@ -947,6 +948,8 @@ struct MainMenu : Screen {
     int sel = 0;
     std::vector<Image> touch_menu;     // Android: the disc's menu images without their pad hint line
     const Image* touch_src = nullptr;
+    std::vector<Image> menu_parts;     // each disc menu image without its second line: top, bottom
+    const Image* menu_parts_src = nullptr;
     int last = 0;   // the menu entry the disc's image highlights while the donate button has focus
     void render(App& a) override;
     void key(App& a, Key k) override;
@@ -1020,13 +1023,38 @@ void MainMenu::render(App& a) {
         mx = float(kMenuAnchorX - m.ax);
         mw = float(m.w);
         const float my = float(kMenuAnchorY - m.ay);
-        SDL_Texture* t = a.texture(m);
-        if (sel == 4) SDL_SetTextureColorMod(t, 150, 150, 150);   // focus on the donate button: dim the words
-        a.draw(m, mx, my);
-        SDL_SetTextureColorMod(t, 255, 255, 255);
+        // The second entry leads to the level choice, not to the game's
+        // password screen: the disc's word (PASSWORDS ...) is left out and
+        // the entry is written like the other languages' menus.
+        const Image* src = &m - last;                      // the vector m comes from
+        if (menu_parts_src != src) {
+            for (const Image& p : menu_parts) a.forget(p);
+            menu_parts.clear();
+            menu_parts.reserve(8);
+            for (int k = 0; k < 4; ++k) {
+                const Image& im = src[k];
+                const int top = int(kMenuAnchorY - im.ay);
+                // the cut starts above the row: umlaut dots (PASSWÖRTER) reach up into the gap
+                const int c0 = std::clamp(98 + 26 - 6 - top, 1, im.h), c1 = std::clamp(98 + 52 - top, 0, im.h - 1);
+                menu_parts.push_back(im.crop(0, 0, im.w, c0));          // crop takes x0, y0, x1, y1
+                menu_parts.push_back(im.crop(0, c1, im.w, im.h));
+            }
+            menu_parts_src = src;
+        }
+        const int c1 = std::clamp(int(98 + 52 - my), 0, m.h - 1);
+        for (int k = 0; k < 2; ++k) {
+            const Image& part = menu_parts[size_t(2 * last + k)];
+            SDL_Texture* t = a.texture(part);
+            if (sel == 4) SDL_SetTextureColorMod(t, 150, 150, 150);   // focus on the donate button: dim the words
+            a.draw(part, mx, k ? my + float(c1) : my);
+            SDL_SetTextureColorMod(t, 255, 255, 255);
+        }
     }
     for (int i = 0; i < 4; ++i) {
-        if (!de) a.text(a.T("menu." + std::to_string(i)), W / 2.0f, 101 + i * 26, i == sel ? "blue" : "orange", "center");
+        if (!de)
+            a.text(a.T("menu." + std::to_string(i)), W / 2.0f, 101 + i * 26, i == sel ? "blue" : "orange", "center");
+        else if (i == 1)   // in the disc's menu: as tall and bright as its own words around it
+            a.text(a.T("menu.1"), W / 2.0f, 101 + 26 - 11, i == sel ? "blue" : "yellow", "center", 1.35f);
         a.hit(mx, 98 + i * 26, mw, 25, [this, i] { sel = i; }, [this, &a] { activate(a); });
     }
     // Donate: a small framed button in the bottom right corner (right of the
@@ -1136,7 +1164,12 @@ std::vector<std::pair<std::string, std::vector<Row>>> all_pages() {
                      {"ntsc_speed", {{"false", "=PAL"}, {"true", "=NTSC"}}}, {"updates", kOnOff}}},
         {"video", {{"internal_resolution", {{"native", "native"}, {"720p", "=720P"}, {"1080p", "=1080P"},
                                             {"1440p", "=1440P"}, {"4k", "=4K"}}},
-                   {"aspect_ratio", {{"4:3", "ratio43"}, {"16:9", "ratio169"}}},
+                   {"aspect_ratio",
+#if defined(__ANDROID__)
+                    {{"4:3", "ratio43"}, {"16:9", "ratio169"}}},   // wide = the phone's own screen
+#else
+                    {{"4:3", "ratio43"}, {"16:9", "ratio169"}, {"21:9", "ratio219"}}},
+#endif
                    {"fullscreen", {{"0", "window"}, {"1", "full"}, {"2", "exclusive"}}},
                    {"vsync", {{"on", "on"}, {"adaptive", "adaptive"}, {"vrr", "=VRR"}, {"off", "off"}}},
                    {"preset", {{"original", "p_original"}, {"hd", "p_hd"}, {"custom", "p_custom"}}}}},
@@ -2447,8 +2480,8 @@ void apply(const std::string& key) {
         const std::string v = st.get(key);
         psx_host_set_texture_filter(v == "bilinear" ? 1 : v == "xbr" ? 3 : 0);
     } else if (key == "aspect_ratio") {
-        if (st.get(key) == "16:9") psx_host_set_display_aspect(wide_numerator(), 9);
-        else psx_host_set_display_aspect(4, 3);
+        if (st.get(key) == "4:3") psx_host_set_display_aspect(4, 3);
+        else psx_host_set_display_aspect(wide_numerator(st.get(key)), 9);
     } else if (key == "fullscreen") {
         psx_host_set_fullscreen(st.get(key) == "0" ? 0 : 1);
     } else if (key == "perspective_texturing") {
