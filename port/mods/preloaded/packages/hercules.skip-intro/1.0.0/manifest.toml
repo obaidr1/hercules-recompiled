@@ -44,6 +44,13 @@ group = "Gameplay"
 default_enabled = false
 
 [[feature]]
+id = "launcher-return"
+name = "Back to the launcher"
+description = "When the game goes back to its own title menu after a game over or the ending, the launcher opens instead (the launcher is the menu)."
+group = "Gameplay"
+default_enabled = false
+
+[[feature]]
 id = "skip-fmv"
 name = "Skip movies"
 description = "Skips every FMV (intro and the story movies between levels) as soon as it starts."
@@ -113,6 +120,10 @@ id = "hercules.skip-memcard"
 [[plugin]]
 feature = "direct-start"
 id = "hercules.direct-start"
+
+[[plugin]]
+feature = "launcher-return"
+id = "hercules.launcher-return"
 
 [[plugin]]
 feature = "skip-fmv"

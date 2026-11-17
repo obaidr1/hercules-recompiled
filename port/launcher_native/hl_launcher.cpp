@@ -552,6 +552,7 @@ void write_mod_state(const Ctx& c, const fs::path& chosen, bool new_game) {
     feature("hercules.ntsc-speed", "ntsc-speed", c.store.b("ntsc_speed"));    // 30 game steps/s like the US release
     feature("hercules.skip-intro", "direct-start", new_game);
     t += "\n[feature.values]\nlevel = " + toml_str(level == "off" || level == "0" ? "1" : level) + "\n";
+    feature("hercules.skip-intro", "launcher-return", true);     // game over: back to the launcher
     // Faster emulated CD (4x: a level's ~2 MB in ~2 s instead of ~8 s) breaks
     // the HD pack: the level textures (and sprite banks loaded mid-level) stay
     // SD. Off for everyone, whatever launcher.ini says (0.4.0/0.5.0 stored
@@ -2551,6 +2552,16 @@ void render() {
 // ---------------------------------------------------------------- input
 void close_menu() { m.open = false; m.quit_armed = false; m.levels_note = false; m.capture = -1; }
 
+// Leave the game for the launcher: the menu's "quit", and after a game over
+// (hercules.skip-intro launcher-return).
+void hook_leave_game() {
+    if (m.loaded) m.ctx.store.save();            // the menu's changes (its store is read on open)
+#if defined(__ANDROID__)
+    android_restart_to_launcher();   // the game is this process: start the app afresh
+#endif
+    psx_host_quit();
+}
+
 void step(int d) {
     const auto ps = menu_pages();
     const int np = int(ps.size());
@@ -2565,11 +2576,7 @@ void step(int d) {
         else if (r.key.rfind("kb.", 0) == 0) { m.capture = kRebind[m.row - 1]; m.dirty = true; }
         else if (r.key == "act.quit") {
             if (!m.quit_armed) { m.quit_armed = true; m.dirty = true; return; }
-            m.ctx.store.save();
-#if defined(__ANDROID__)
-            android_restart_to_launcher();   // the game is this process: start the app afresh
-#endif
-            psx_host_quit();
+            hook_leave_game();
         }
         return;
     }
@@ -2752,7 +2759,8 @@ void hook_touch(float x, float y, int phase) {
     m.dirty = true;
 }
 
-const PsxGameMenuHooks kHooks = {hook_open, hook_is_open, hook_key, hook_tick, hook_image, hook_touch};
+const PsxGameMenuHooks kHooks = {hook_open, hook_is_open, hook_key, hook_tick, hook_image, hook_touch,
+                                 hook_leave_game};
 
 }  // namespace ingame
 
