@@ -1,0 +1,124 @@
+From b793a0e0581162d4ff25be53422822bbc3fc4719 Mon Sep 17 00:00:00 2001
+From: obaidr1 <147771377+obaidr1@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 14:43:31 +0100
+Subject: [PATCH 16/26] touch_pad: haptic ticks (psx_android_haptic) and
+ stronger press highlights
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ runtime/include/touch_pad.h |  6 ++++++
+ runtime/src/touch_pad.c     | 36 +++++++++++++++++++++++++++++++-----
+ 2 files changed, 37 insertions(+), 5 deletions(-)
+
+diff --git a/runtime/include/touch_pad.h b/runtime/include/touch_pad.h
+index 18d6ed0..43d54ce 100644
+--- a/runtime/include/touch_pad.h
++++ b/runtime/include/touch_pad.h
+@@ -22,6 +22,12 @@ int touch_pad_event(const union SDL_Event *ev);
+ /* Draw over the composed frame (software / SDL_Renderer present path). */
+ void touch_pad_draw_sdl(struct SDL_Renderer *renderer);
+ 
++/* Haptic tick through the app's activity (Android: a static
++ * haptic(int) method, View.performHapticFeedback -- follows the system's
++ * touch-feedback setting, needs no permission). No-op elsewhere. */
++enum { PSX_HAPTIC_PRESS = 0, PSX_HAPTIC_CONFIRM = 1 };
++void psx_android_haptic(int kind);
++
+ #ifdef __cplusplus
+ }
+ #endif
+diff --git a/runtime/src/touch_pad.c b/runtime/src/touch_pad.c
+index 271d25e..9b364e9 100644
+--- a/runtime/src/touch_pad.c
++++ b/runtime/src/touch_pad.c
+@@ -21,6 +21,10 @@
+ 
+ #include "host_osd.h"
+ 
++#if defined(__ANDROID__)
++#include <jni.h>
++#endif
++
+ #ifndef M_PI
+ #define M_PI 3.14159265358979323846
+ #endif
+@@ -54,6 +58,23 @@ static Layout    s_lay;
+ static struct { SDL_FingerID id; int on; int what; float x, y; } s_fingers[MAX_FINGERS];
+ static uint32_t  s_pressed;      /* bit per TP_* */
+ 
++void psx_android_haptic(int kind)
++{
++#if defined(__ANDROID__)
++    JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();
++    jobject act = (jobject)SDL_GetAndroidActivity();
++    if (!env || !act) return;
++    jclass cls = (*env)->GetObjectClass(env, act);
++    jmethodID m = cls ? (*env)->GetStaticMethodID(env, cls, "haptic", "(I)V") : NULL;
++    if (m) (*env)->CallStaticVoidMethod(env, cls, m, (jint)kind);
++    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
++    if (cls) (*env)->DeleteLocalRef(env, cls);
++    (*env)->DeleteLocalRef(env, act);
++#else
++    (void)kind;
++#endif
++}
++
+ static int enabled(void)
+ {
+     if (s_enabled < 0) {
+@@ -122,6 +143,7 @@ static void ensure_ready(void)
+ 
+ static void push_state(uint32_t pressed)
+ {
++    if (pressed & ~s_pressed) psx_android_haptic(PSX_HAPTIC_PRESS);   /* a new press: tick */
+     if (pressed == s_pressed || !s_joy) { s_pressed = pressed; return; }
+     s_pressed = pressed;
+     static const struct { int tp, button; } map[] = {
+@@ -349,7 +371,8 @@ void touch_pad_draw_sdl(struct SDL_Renderer* r)
+             { L->dpad.x + t / 2, L->dpad.y - t / 2, a - t / 2, t },      /* right */
+         };
+         const Box hub = { L->dpad.x - t / 2, L->dpad.y - t / 2, t, t };
+-        for (int i = 0; i < 4; ++i) fill_box(r, &arms[i], (s_pressed >> (TP_UP + i)) & 1 ? hot : base);
++        const SDL_FColor arm_on = {1, 0.85f, 0.35f, 0.55f};   /* pressed direction: warm highlight */
++        for (int i = 0; i < 4; ++i) fill_box(r, &arms[i], (s_pressed >> (TP_UP + i)) & 1 ? arm_on : base);
+         fill_box(r, &hub, base);
+         ring(r, L->dpad.x, L->dpad.y, a * 1.08f, 0.35f * u, edge);
+         /* Face buttons with their PlayStation symbols */
+@@ -359,8 +382,10 @@ void touch_pad_draw_sdl(struct SDL_Renderer* r)
+         };
+         for (int i = 0; i < 4; ++i) {
+             const Disc* d = &L->face[i];
+-            fill_disc(r, d->x, d->y, d->r, (s_pressed >> (TP_CROSS + i)) & 1 ? hot : base);
+-            ring(r, d->x, d->y, d->r, 0.3f * u, edge);
++            const int on = (s_pressed >> (TP_CROSS + i)) & 1;
++            fill_disc(r, d->x, d->y, on ? d->r * 1.08f : d->r, on ? hot : base);
++            ring(r, d->x, d->y, on ? d->r * 1.08f : d->r, 0.3f * u, edge);
++            if (on) ring(r, d->x, d->y, d->r * 1.32f, 0.6f * u, sym[i]);   /* glow in the button's colour */
+             const float s = 0.45f * d->r, lw2 = 0.55f * u;
+             if (i == 0) {
+                 thick_line(r, d->x - s, d->y - s, d->x + s, d->y + s, lw2, sym[0]);
+@@ -383,12 +408,12 @@ void touch_pad_draw_sdl(struct SDL_Renderer* r)
+         const SDL_FColor text = {1, 1, 1, 0.75f};
+         for (int i = 0; i < 4; ++i) {
+             const Box* b = &L->shoulder[i];
+-            fill_box(r, b, (s_pressed >> (TP_L1 + i)) & 1 ? hot : base);
++            fill_box(r, b, (s_pressed >> (TP_L1 + i)) & 1 ? arm_on : base);
+             label(r, names[i], b->x + b->w / 2, b->y + b->h / 2, 0.45f * u, text);
+         }
+         for (int i = 0; i < 2; ++i) {
+             const Box* b = &L->meta[i];
+-            fill_box(r, b, (s_pressed >> (TP_SELECT + i)) & 1 ? hot : base);
++            fill_box(r, b, (s_pressed >> (TP_SELECT + i)) & 1 ? arm_on : base);
+             label(r, names[4 + i], b->x + b->w / 2, b->y + b->h / 2, 0.28f * u, text);
+         }
+     }
+@@ -403,5 +428,6 @@ void touch_pad_draw_sdl(struct SDL_Renderer* r)
+ 
+ int touch_pad_event(const union SDL_Event* ev) { (void)ev; return 0; }
+ void touch_pad_draw_sdl(struct SDL_Renderer* r) { (void)r; }
++void psx_android_haptic(int kind) { (void)kind; }
+ 
+ #endif
+-- 
+2.56.0
+

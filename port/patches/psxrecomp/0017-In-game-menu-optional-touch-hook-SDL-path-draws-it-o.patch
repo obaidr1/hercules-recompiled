@@ -1,0 +1,114 @@
+From 66609dcf314977abc456ca2e5c67a603a806b5be Mon Sep 17 00:00:00 2001
+From: obaidr1 <147771377+obaidr1@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 14:52:52 +0100
+Subject: [PATCH 17/26] In-game menu: optional touch hook; SDL path draws it
+ over the whole window
+
+PsxGameMenuHooks.touch (x, y as 0..1 of the window, phase down/move/up):
+while the menu is open the host sends it the fingers, and the touch controls
+step aside.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ runtime/include/psx_game_menu.h |  5 +++++
+ runtime/src/host_osd.c          | 12 +++++++++---
+ runtime/src/main.cpp            |  9 +++++++++
+ runtime/src/touch_pad.c         |  7 +++++++
+ 4 files changed, 30 insertions(+), 3 deletions(-)
+
+diff --git a/runtime/include/psx_game_menu.h b/runtime/include/psx_game_menu.h
+index 25d8aec..77c4d86 100644
+--- a/runtime/include/psx_game_menu.h
++++ b/runtime/include/psx_game_menu.h
+@@ -24,12 +24,17 @@ typedef struct PsxGameMenuHooks {
+     void (*tick)(uint32_t now_ms);
+     /* 0xAARRGGBB image stretched over the whole window; 0 = nothing */
+     int  (*image)(const uint32_t **pixels, int *w, int *h);
++    /* optional: a finger on the touch screen while open, x/y as 0..1 of the
++     * window (= of the image); phase 0 down, 1 move, 2 up. NULL: the touch
++     * controls drive the menu like a pad instead. */
++    void (*touch)(float x, float y, int phase);
+ } PsxGameMenuHooks;
+ 
+ void psx_game_menu_register(const PsxGameMenuHooks *hooks);
+ 
+ /* host side, for the menu */
+ int      psx_game_menu_overlay_image(const uint32_t **pixels, int *w, int *h);
++int      psx_game_menu_visible(void);                   /* 1 while the menu is open */
+ void     psx_host_window_size(int *w, int *h);         /* drawable pixels */
+ uint32_t psx_host_p1_buttons(void);                     /* SDL gamepad button mask, P1 */
+ void     psx_host_osd(const char *message, int ms);
+diff --git a/runtime/src/host_osd.c b/runtime/src/host_osd.c
+index 33b5ca6..cff9e04 100644
+--- a/runtime/src/host_osd.c
++++ b/runtime/src/host_osd.c
+@@ -553,9 +553,15 @@ void host_osd_draw_sdl(struct SDL_Renderer *renderer) {
+                           &s_sdl_ssm_th, px, w, h, 0, 0, lw, lh);
+         }
+         if (psx_game_menu_overlay_image(&px, &w, &h) && px) {
+-            int lw = 640, lh = 480;
+-            sdl_logical_size(renderer, &lw, &lh);
+-            sdl_blit_argb(renderer, &s_sdl_gm_tex, &s_sdl_gm_tw, &s_sdl_gm_th, px, w, h, 0, 0, lw, lh);
++            /* over the whole window, as on the GL path (the menu draws its
++             * own sides and takes touches in window coordinates) */
++            int lw = 0, lh = 0, ow = 0, oh = 0;
++            SDL_RendererLogicalPresentation mode = SDL_LOGICAL_PRESENTATION_DISABLED;
++            SDL_GetRenderLogicalPresentation(renderer, &lw, &lh, &mode);
++            SDL_SetRenderLogicalPresentation(renderer, 0, 0, SDL_LOGICAL_PRESENTATION_DISABLED);
++            SDL_GetCurrentRenderOutputSize(renderer, &ow, &oh);
++            sdl_blit_argb(renderer, &s_sdl_gm_tex, &s_sdl_gm_tw, &s_sdl_gm_th, px, w, h, 0, 0, ow, oh);
++            SDL_SetRenderLogicalPresentation(renderer, lw, lh, mode);
+         }
+     }
+     touch_pad_draw_sdl(renderer);   /* on-screen controls (Android) over everything */
+diff --git a/runtime/src/main.cpp b/runtime/src/main.cpp
+index aa9942a..919e15c 100644
+--- a/runtime/src/main.cpp
++++ b/runtime/src/main.cpp
+@@ -8125,6 +8125,14 @@ static void game_menu_host_pause_loop(void) {
+         SDL_Event ev;
+         while (SDL_PollEvent(&ev)) {
+             (void)psx_local_mouse_event(ev);
++            if (g_game_menu->touch &&
++                (ev.type == SDL_EVENT_FINGER_DOWN || ev.type == SDL_EVENT_FINGER_MOTION ||
++                 ev.type == SDL_EVENT_FINGER_UP || ev.type == SDL_EVENT_FINGER_CANCELED)) {
++                /* the menu takes the fingers itself (rows tapped directly) */
++                g_game_menu->touch(ev.tfinger.x, ev.tfinger.y,
++                                   ev.type == SDL_EVENT_FINGER_DOWN ? 0 : ev.type == SDL_EVENT_FINGER_MOTION ? 1 : 2);
++                continue;
++            }
+             if (touch_pad_event(&ev)) continue;   /* the menu is driven by the pad too */
+             if (ev.type == SDL_QUIT) {
+                 psx_crash_trace_set_exit_origin("sdl_window_close");
+@@ -8199,6 +8207,7 @@ static void dbgov_host_pause_loop(void) {
+     savestate_input_guard_arm();   /* the key that ended it must not reach the game */
+ }
+ 
++extern "C" int psx_game_menu_visible(void) { return game_menu_open() ? 1 : 0; }
+ extern "C" int psx_game_menu_overlay_image(const uint32_t** px, int* w, int* h) {
+     if (!game_menu_open() || !g_game_menu->image) return 0;
+     return g_game_menu->image(px, w, h);
+diff --git a/runtime/src/touch_pad.c b/runtime/src/touch_pad.c
+index 9b364e9..06c9ba5 100644
+--- a/runtime/src/touch_pad.c
++++ b/runtime/src/touch_pad.c
+@@ -329,9 +329,16 @@ static void label(SDL_Renderer* r, const char* s, float cx, float cy, float px,
+     }
+ }
+ 
++extern int psx_game_menu_visible(void);   /* main.cpp: the title's in-game menu is open */
++
+ void touch_pad_draw_sdl(struct SDL_Renderer* r)
+ {
+     if (!r || !enabled()) return;
++    if (psx_game_menu_visible()) {                    /* the menu is tapped directly */
++        if (s_pressed) push_state(0);
++        memset(s_fingers, 0, sizeof s_fingers);
++        return;
++    }
+     ensure_ready();
+     if (physical_gamepad_present()) {                 /* a real pad takes over */
+         if (s_pressed) push_state(0);
+-- 
+2.56.0
+

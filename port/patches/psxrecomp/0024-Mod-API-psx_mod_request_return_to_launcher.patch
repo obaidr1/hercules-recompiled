@@ -1,0 +1,94 @@
+From 22df2863c3936fa8c0f25e3854980895f22a8ec5 Mon Sep 17 00:00:00 2001
+From: obaidr1 <147771377+obaidr1@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 20:14:39 +0100
+Subject: [PATCH 24/26] Mod API: psx_mod_request_return_to_launcher
+
+A title mod can leave the game for the launcher (staged, acted on at the
+next VBlank through the game menu's new optional leave_game hook, else
+psx_host_quit).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ overlay_toolchain/include/mod_plugins.h |  1 +
+ runtime/include/mod_plugins.h           |  7 +++++++
+ runtime/include/psx_game_menu.h         |  3 +++
+ runtime/src/main.cpp                    | 12 ++++++++++++
+ 4 files changed, 23 insertions(+)
+
+diff --git a/overlay_toolchain/include/mod_plugins.h b/overlay_toolchain/include/mod_plugins.h
+index e8c303c..691ed40 100644
+--- a/overlay_toolchain/include/mod_plugins.h
++++ b/overlay_toolchain/include/mod_plugins.h
+@@ -523,6 +523,7 @@ uint32_t psx_mod_render_pass_frame(struct CPUState* cpu,
+ int psx_mod_run_guest_span(struct CPUState* cpu, uint32_t start_pc,
+                            uint32_t stop_pc);
+ int psx_mod_set_auto_skip_fmv(int enabled);
++int psx_mod_request_return_to_launcher(void);
+ /*
+  * NTSC timing for a PAL game ("force NTSC timings" in emulators): 60 VBlanks
+  * per guest second with NTSC line timing while the GPU keeps the PAL picture,
+diff --git a/runtime/include/mod_plugins.h b/runtime/include/mod_plugins.h
+index 7d4d37e..441f46a 100644
+--- a/runtime/include/mod_plugins.h
++++ b/runtime/include/mod_plugins.h
+@@ -794,6 +794,13 @@ uint32_t psx_mod_render_pass_frame(struct CPUState* cpu,
+ int psx_mod_run_guest_span(struct CPUState* cpu, uint32_t start_pc,
+                            uint32_t stop_pc);
+ int psx_mod_set_auto_skip_fmv(int enabled);
++/*
++ * Leave the game for the title's launcher (e.g. the game went back to its own
++ * title menu after a game over, and the launcher is the menu). Staged: the
++ * host acts at the next VBlank through the game menu's leave_game hook, or
++ * ends the run when no launcher registered one. Returns 1 when staged.
++ */
++int psx_mod_request_return_to_launcher(void);
+ /*
+  * NTSC timing for a PAL game ("force NTSC timings" in emulators): 60 VBlanks
+  * per guest second with NTSC line timing while the GPU keeps the PAL picture,
+diff --git a/runtime/include/psx_game_menu.h b/runtime/include/psx_game_menu.h
+index 77c4d86..c5b4d31 100644
+--- a/runtime/include/psx_game_menu.h
++++ b/runtime/include/psx_game_menu.h
+@@ -28,6 +28,9 @@ typedef struct PsxGameMenuHooks {
+      * window (= of the image); phase 0 down, 1 move, 2 up. NULL: the touch
+      * controls drive the menu like a pad instead. */
+     void (*touch)(float x, float y, int phase);
++    /* optional: leave the game for the launcher (what the menu's own "quit"
++     * does); used by psx_mod_request_return_to_launcher. NULL: psx_host_quit. */
++    void (*leave_game)(void);
+ } PsxGameMenuHooks;
+ 
+ void psx_game_menu_register(const PsxGameMenuHooks *hooks);
+diff --git a/runtime/src/main.cpp b/runtime/src/main.cpp
+index 364207a..8e55bbb 100644
+--- a/runtime/src/main.cpp
++++ b/runtime/src/main.cpp
+@@ -7648,6 +7648,17 @@ static int hotkey_shortcut_down(int shortcut, int binding) {
+ /* Title in-game menu (psx_game_menu.h): Esc / Select+Start. */
+ static const PsxGameMenuHooks* g_game_menu = nullptr;
+ extern "C" void psx_game_menu_register(const PsxGameMenuHooks* hooks) { g_game_menu = hooks; }
++static volatile int s_return_to_launcher = 0;
++extern "C" int psx_mod_request_return_to_launcher(void) { s_return_to_launcher = 1; return 1; }
++/* At a VBlank, outside the guest's frame work: the staged request from a mod. */
++static void return_to_launcher_poll(void) {
++    if (!s_return_to_launcher) return;
++    s_return_to_launcher = 0;
++    std::fprintf(stdout, "psxrecomp: mod asked to return to the launcher\n");
++    std::fflush(stdout);
++    if (g_game_menu && g_game_menu->leave_game) g_game_menu->leave_game();
++    psx_host_quit();
++}
+ static bool game_menu_open() { return g_game_menu && g_game_menu->is_open && g_game_menu->is_open(); }
+ 
+ static void direct_shortcut_claim_update(void) {
+@@ -10338,6 +10349,7 @@ extern "C" int psx_dynres_status_json(char *out, int cap) {
+ 
+ 
+ static void sdl_vblank_present(void) {
++    return_to_launcher_poll();
+     sync_guest_cadence_to_video_standard();
+     NetplayVblankEpilogue ep = sdl_vblank_present_body();
+     render_thread_vblank();
+-- 
+2.56.0
+

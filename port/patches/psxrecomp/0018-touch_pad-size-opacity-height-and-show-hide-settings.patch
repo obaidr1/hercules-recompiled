@@ -1,0 +1,179 @@
+From 268147ae18b2718e3ee6145c566f279c7695bb54 Mon Sep 17 00:00:00 2001
+From: obaidr1 <147771377+obaidr1@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 15:03:17 +0100
+Subject: [PATCH 18/26] touch_pad: size, opacity, height and show/hide settings
+ (env + live)
+
+PSX_TOUCH_SHOW/SIZE/ALPHA/POS at start-up, touch_pad_configure() live.
+Bigger buttons stay on screen; Select/Start move beside the clusters when
+there is no room above them.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ runtime/include/touch_pad.h |  6 ++++
+ runtime/src/touch_pad.c     | 71 ++++++++++++++++++++++++++++++++-----
+ 2 files changed, 68 insertions(+), 9 deletions(-)
+
+diff --git a/runtime/include/touch_pad.h b/runtime/include/touch_pad.h
+index 43d54ce..7c67e6d 100644
+--- a/runtime/include/touch_pad.h
++++ b/runtime/include/touch_pad.h
+@@ -28,6 +28,12 @@ void touch_pad_draw_sdl(struct SDL_Renderer *renderer);
+ enum { PSX_HAPTIC_PRESS = 0, PSX_HAPTIC_CONFIRM = 1 };
+ void psx_android_haptic(int kind);
+ 
++/* The player's settings, live: show 0/1, size and opacity in percent of the
++ * default (100 / 70 = the standard look), mid 1 = buttons at mid height
++ * instead of low. At start-up they come from PSX_TOUCH_SHOW, PSX_TOUCH_SIZE,
++ * PSX_TOUCH_ALPHA and PSX_TOUCH_POS (low|mid). */
++void touch_pad_configure(int show, int size_pct, int alpha_pct, int mid);
++
+ #ifdef __cplusplus
+ }
+ #endif
+diff --git a/runtime/src/touch_pad.c b/runtime/src/touch_pad.c
+index 06c9ba5..91ca873 100644
+--- a/runtime/src/touch_pad.c
++++ b/runtime/src/touch_pad.c
+@@ -51,6 +51,11 @@ typedef struct {
+ } Layout;
+ 
+ static int       s_enabled = -1;
++static int       s_show = 1;          /* drawn and taking touches */
++static float     s_scale = 1.0f;      /* button size, 1 = standard */
++static float     s_alpha = 1.0f;      /* opacity factor, 1 = standard (70 %) */
++static int       s_mid = 0;           /* buttons at mid height */
++static int       s_config_read;
+ static int       s_ready;
+ static SDL_Joystick* s_joy;
+ static SDL_JoystickID s_joy_id;
+@@ -75,6 +80,8 @@ void psx_android_haptic(int kind)
+ #endif
+ }
+ 
++static void push_state(uint32_t pressed);
++
+ static int enabled(void)
+ {
+     if (s_enabled < 0) {
+@@ -88,26 +95,65 @@ static int enabled(void)
+     return s_enabled;
+ }
+ 
++static void read_config(void)
++{
++    if (s_config_read) return;
++    s_config_read = 1;
++    const char* e;
++    if ((e = SDL_getenv("PSX_TOUCH_SHOW")) && *e) s_show = *e != '0';
++    if ((e = SDL_getenv("PSX_TOUCH_SIZE")) && *e) s_scale = SDL_clamp(SDL_atoi(e), 50, 200) / 100.0f;
++    if ((e = SDL_getenv("PSX_TOUCH_ALPHA")) && *e) s_alpha = SDL_clamp(SDL_atoi(e), 10, 140) / 70.0f;
++    if ((e = SDL_getenv("PSX_TOUCH_POS")) && *e) s_mid = SDL_strcmp(e, "mid") == 0;
++}
++
++void touch_pad_configure(int show, int size_pct, int alpha_pct, int mid)
++{
++    s_config_read = 1;
++    s_show = show != 0;
++    s_scale = SDL_clamp(size_pct, 50, 200) / 100.0f;
++    s_alpha = SDL_clamp(alpha_pct, 10, 140) / 70.0f;
++    s_mid = mid != 0;
++    s_lay.W = 0;                                      /* lay out again */
++    if (!s_show) { memset(s_fingers, 0, sizeof s_fingers); push_state(0); }
++}
++
+ static void make_layout(float W, float H)
+ {
+     const float h = H;
+     Layout* L = &s_lay;
+     L->W = W; L->H = H;
+-    const float cy = 0.64f * h;                       /* D-pad / face centre height */
+-    L->dpad = (Disc){ 0.24f * h, cy, 0.19f * h };
+-    const float fx = W - 0.24f * h, d = 0.125f * h, br = 0.068f * h;
++    const float k = s_scale;
++    const float rad = 0.19f * h * k;
++    float cy = (s_mid ? 0.50f : 0.64f) * h;           /* D-pad / face centre height */
++    cy = SDL_min(cy, h - 1.25f * rad);                /* bigger buttons stay on screen */
++    L->dpad = (Disc){ SDL_max(0.24f * h, 1.15f * rad + 0.02f * h), cy, rad };
++    const float d = 0.125f * h * k, br = 0.068f * h * k;
++    const float fx = W - SDL_max(0.24f * h, d + 1.45f * br + 0.02f * h);
+     L->face[0] = (Disc){ fx,     cy + d, br };       /* cross: bottom */
+     L->face[1] = (Disc){ fx + d, cy,     br };       /* circle: right */
+     L->face[2] = (Disc){ fx - d, cy,     br };       /* square: left */
+     L->face[3] = (Disc){ fx,     cy - d, br };       /* triangle: top */
+-    const float sw = 0.17f * h, sh = 0.085f * h, sy = 0.06f * h;
++    const float sw = 0.17f * h * k, sh = 0.085f * h * k, sy = 0.06f * h;
+     L->shoulder[0] = (Box){ 0.05f * h,          sy, sw, sh };          /* L1 */
+     L->shoulder[1] = (Box){ W - 0.05f * h - sw, sy, sw, sh };          /* R1 */
+     L->shoulder[2] = (Box){ 0.05f * h,          sy + sh + 0.03f * h, sw, sh };   /* L2 */
+     L->shoulder[3] = (Box){ W - 0.05f * h - sw, sy + sh + 0.03f * h, sw, sh };   /* R2 */
+-    const float mw = 0.15f * h, mh = 0.065f * h, my = 0.30f * h;
+-    L->meta[0] = (Box){ 0.24f * h - mw / 2,     my, mw, mh };           /* select */
+-    L->meta[1] = (Box){ W - 0.24f * h - mw / 2, my, mw, mh };           /* start */
++    /* Select / Start between the shoulder buttons and the D-pad / face
++     * buttons when they fit there; with big buttons there is no room, so
++     * they move beside the clusters (towards the picture) instead of under
++     * the triangle. */
++    const float mw = 0.15f * h * k, mh = 0.065f * h * k, gap = 0.02f * h;
++    const float below_shoulders = sy + 2 * sh + 0.03f * h + gap;
++    const float face_top = cy - d - 1.45f * br, dpad_top = cy - 1.12f * rad;
++    const float my = below_shoulders;
++    if (my + mh + gap <= SDL_min(face_top, dpad_top)) {
++        L->meta[0] = (Box){ L->dpad.x - mw / 2, my, mw, mh };           /* select */
++        L->meta[1] = (Box){ fx - mw / 2,        my, mw, mh };           /* start */
++    } else {
++        const float side_y = cy - d - mh / 2;                           /* level with the triangle */
++        L->meta[0] = (Box){ L->dpad.x + 1.12f * rad + gap, side_y, mw, mh };
++        L->meta[1] = (Box){ fx - d - 1.45f * br - gap - mw, side_y, mw, mh };
++    }
+ }
+ 
+ static int physical_gamepad_present(void)
+@@ -216,6 +262,8 @@ static uint32_t collect(void)
+ int touch_pad_event(const union SDL_Event* ev)
+ {
+     if (!enabled()) return 0;
++    read_config();
++    if (!s_show) return 0;
+     const Uint32 t = ev->type;
+     if (t != SDL_EVENT_FINGER_DOWN && t != SDL_EVENT_FINGER_MOTION && t != SDL_EVENT_FINGER_UP &&
+         t != SDL_EVENT_FINGER_CANCELED)
+@@ -334,6 +382,8 @@ extern int psx_game_menu_visible(void);   /* main.cpp: the title's in-game menu
+ void touch_pad_draw_sdl(struct SDL_Renderer* r)
+ {
+     if (!r || !enabled()) return;
++    read_config();
++    if (!s_show) return;
+     if (psx_game_menu_visible()) {                    /* the menu is tapped directly */
+         if (s_pressed) push_state(0);
+         memset(s_fingers, 0, sizeof s_fingers);
+@@ -367,7 +417,9 @@ void touch_pad_draw_sdl(struct SDL_Renderer* r)
+     if (W > 0 && H > 0) {
+         if (s_lay.W != (float)W || s_lay.H != (float)H) make_layout((float)W, (float)H);
+         const Layout* L = &s_lay;
+-        const SDL_FColor base = {1, 1, 1, 0.16f}, edge = {1, 1, 1, 0.38f}, hot = {1, 1, 1, 0.42f};
++        const float A = s_alpha;
++        const SDL_FColor base = {1, 1, 1, SDL_min(0.16f * A, 0.6f)}, edge = {1, 1, 1, SDL_min(0.38f * A, 0.9f)},
++                         hot = {1, 1, 1, SDL_min(0.42f * A + 0.1f, 0.85f)};
+         const float u = (float)H / 100.0f;              /* 1 % of the height */
+         /* D-pad: a cross, the pressed arms brighter */
+         const float a = L->dpad.r, t = 0.36f * L->dpad.r;
+@@ -412,7 +464,7 @@ void touch_pad_draw_sdl(struct SDL_Renderer* r)
+             }
+         }
+         static const char* names[6] = {"L1", "R1", "L2", "R2", "SELECT", "START"};
+-        const SDL_FColor text = {1, 1, 1, 0.75f};
++        const SDL_FColor text = {1, 1, 1, SDL_min(0.75f * A, 1.0f)};
+         for (int i = 0; i < 4; ++i) {
+             const Box* b = &L->shoulder[i];
+             fill_box(r, b, (s_pressed >> (TP_L1 + i)) & 1 ? arm_on : base);
+@@ -436,5 +488,6 @@ void touch_pad_draw_sdl(struct SDL_Renderer* r)
+ int touch_pad_event(const union SDL_Event* ev) { (void)ev; return 0; }
+ void touch_pad_draw_sdl(struct SDL_Renderer* r) { (void)r; }
+ void psx_android_haptic(int kind) { (void)kind; }
++void touch_pad_configure(int show, int size_pct, int alpha_pct, int mid) { (void)show; (void)size_pct; (void)alpha_pct; (void)mid; }
+ 
+ #endif
+-- 
+2.56.0
+

@@ -1,0 +1,87 @@
+From fba7da23952c361a190d8bddfe7c5c7b61b18215 Mon Sep 17 00:00:00 2001
+From: obaidr1 <147771377+obaidr1@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 20:27:54 +0100
+Subject: [PATCH 25/26] Android: install the runtime's own files from the APK
+
+runtime/files.txt + runtime/stamp.txt in the APK's assets; at start the
+listed files are written into the app's files folder whenever the stamp
+differs from the last one written, mods/bundled emptied first. Player
+files are not in the list.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ runtime/src/main.cpp | 51 ++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 51 insertions(+)
+
+diff --git a/runtime/src/main.cpp b/runtime/src/main.cpp
+index 8e55bbb..67b9580 100644
+--- a/runtime/src/main.cpp
++++ b/runtime/src/main.cpp
+@@ -16160,6 +16160,56 @@ static uint32_t gcs_gate_read_ram(uint32_t phys, uint32_t size) {
+ static PsxGameLauncherFn g_game_launcher = nullptr;
+ extern "C" void psx_game_launcher_register(PsxGameLauncherFn fn) { g_game_launcher = fn; }
+ 
++#if defined(__ANDROID__)
++/* The APK carries the runtime's own files (game.toml, bios/, mods/bundled/,
++ * assets/ ...) as assets under runtime/, listed one path per line in
++ * runtime/files.txt, with runtime/stamp.txt a hash over all of them. They are
++ * written into the files folder whenever that stamp differs from the one last
++ * written (.runtime_stamp), so an app update brings them along. The player's
++ * files (disc, saves, settings, launcher.ini, mods/state.toml, texture packs)
++ * are not in the list. mods/bundled is emptied first, so a package dropped
++ * from the APK goes too. */
++static void android_install_runtime_files() {
++    size_t n = 0;
++    char* raw = static_cast<char*>(SDL_LoadFile("runtime/stamp.txt", &n));
++    if (!raw) return;                        /* a build without packed files */
++    std::string want(raw, n);
++    SDL_free(raw);
++    while (!want.empty() && (want.back() == '\n' || want.back() == '\r')) want.pop_back();
++    std::string have;
++    { std::ifstream f(".runtime_stamp"); std::getline(f, have); }
++    if (want.empty() || want == have) return;
++    raw = static_cast<char*>(SDL_LoadFile("runtime/files.txt", &n));
++    if (!raw) return;
++    std::istringstream list(std::string(raw, n));
++    SDL_free(raw);
++    std::error_code ec;
++    std::filesystem::remove_all("mods/bundled", ec);
++    int written = 0, failed = 0;
++    for (std::string rel; std::getline(list, rel);) {
++        while (!rel.empty() && (rel.back() == '\r' || rel.back() == ' ')) rel.pop_back();
++        if (rel.empty()) continue;
++        size_t size = 0;
++        void* data = SDL_LoadFile(("runtime/" + rel).c_str(), &size);
++        bool ok = data != nullptr;
++        if (ok) {
++            const std::filesystem::path path(rel);
++            if (path.has_parent_path()) std::filesystem::create_directories(path.parent_path(), ec);
++            const std::string tmp = rel + ".tmp";
++            std::FILE* f = std::fopen(tmp.c_str(), "wb");
++            ok = f && std::fwrite(data, 1, size, f) == size;
++            if (f && std::fclose(f) != 0) ok = false;
++            if (ok) { std::filesystem::rename(tmp, path, ec); ok = !ec; }
++            SDL_free(data);
++        }
++        ok ? ++written : ++failed;
++    }
++    if (!failed) std::ofstream(".runtime_stamp") << want << "\n";
++    std::fprintf(stdout, "psxrecomp: runtime files from the APK: %d written, %d failed (stamp %s)\n",
++                 written, failed, want.c_str());
++}
++#endif
++
+ int main(int argc, char** argv) {
+ #if defined(__ANDROID__)
+     /* Android has no working directory or console: run in the app's internal
+@@ -16190,6 +16240,7 @@ int main(int argc, char** argv) {
+                 while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+                 if (!line.empty()) android_args.push_back(line);
+             }
++            android_install_runtime_files();
+         }
+     }
+     static char android_exe[] = "Hercules_Recompiled";
+-- 
+2.56.0
+

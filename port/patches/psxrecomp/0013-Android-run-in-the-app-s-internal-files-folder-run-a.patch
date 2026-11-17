@@ -1,0 +1,38 @@
+From 90f70d5c7d3a17a8b58cf17abe72c51cab8a664e Mon Sep 17 00:00:00 2001
+From: obaidr1 <147771377+obaidr1@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 12:31:35 +0100
+Subject: [PATCH 13/26] Android: run in the app's internal files folder (run-as
+ can stage it)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ runtime/src/main.cpp | 11 ++++++-----
+ 1 file changed, 6 insertions(+), 5 deletions(-)
+
+diff --git a/runtime/src/main.cpp b/runtime/src/main.cpp
+index a1bc170..03584d5 100644
+--- a/runtime/src/main.cpp
++++ b/runtime/src/main.cpp
+@@ -16128,13 +16128,14 @@ extern "C" void psx_game_launcher_register(PsxGameLauncherFn fn) { g_game_launch
+ 
+ int main(int argc, char** argv) {
+ #if defined(__ANDROID__)
+-    /* Android has no working directory or console: run in the app's external
+-     * files folder (game.toml, bios/, mods/ and the disc live there; adb can
+-     * write it), send stdout/stderr to psxrecomp.log in it, and take extra
+-     * command-line arguments from android_args.txt (one per line). */
++    /* Android has no working directory or console: run in the app's internal
++     * files folder (game.toml, bios/, mods/ and the disc live there; only the
++     * app -- or `adb shell run-as` on a debug build -- can write it), send
++     * stdout/stderr to psxrecomp.log in it, and take extra command-line
++     * arguments from android_args.txt (one per line). */
+     static std::vector<std::string> android_args;
+     static std::vector<char*> android_argv;
+-    if (const char* dir = SDL_GetAndroidExternalStoragePath()) {
++    if (const char* dir = SDL_GetAndroidInternalStoragePath()) {
+         if (chdir(dir) == 0) {
+             if (std::FILE* log = std::fopen("psxrecomp.log", "w")) {
+                 dup2(fileno(log), 1);
+-- 
+2.56.0
+

@@ -1,0 +1,31 @@
+From 59e233b6f6fa02fd61453419b2ce26fc2f46c050 Mon Sep 17 00:00:00 2001
+From: obaidr1 <147771377+obaidr1@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 14:12:53 +0100
+Subject: [PATCH 23/26] Touch pad (SDL path): lay out for the full output, not
+ the logical size
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ runtime/src/touch_pad.c | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/runtime/src/touch_pad.c b/runtime/src/touch_pad.c
+index db37ec1..03e7d97 100644
+--- a/runtime/src/touch_pad.c
++++ b/runtime/src/touch_pad.c
+@@ -473,9 +473,10 @@ void touch_pad_draw_sdl(struct SDL_Renderer* r)
+ {
+     if (!r) return;
+     /* Draw in output pixels over the whole screen, not the game's logical
+-     * 4:3 area, so the controls can sit in the letterbox bars. */
++     * 4:3 area, so the controls can sit in the letterbox bars. (The "current"
++     * output size is the logical one while a logical presentation is set.) */
+     int W = 0, H = 0;
+-    SDL_GetCurrentRenderOutputSize(r, &W, &H);
++    SDL_GetRenderOutputSize(r, &W, &H);
+     if (!build(W, H)) return;
+     int lw = 0, lh = 0;
+     SDL_RendererLogicalPresentation mode = SDL_LOGICAL_PRESENTATION_DISABLED;
+-- 
+2.56.0
+

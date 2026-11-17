@@ -1,0 +1,54 @@
+From 769808026fe376010ccad75af4df74f399c780f7 Mon Sep 17 00:00:00 2001
+From: obaidr1 <147771377+obaidr1@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 16:50:29 +0100
+Subject: [PATCH 21/26] Android: cap GL internal scale at 4x, read
+ android_env.txt
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ runtime/include/gpu_render.h | 7 +++++++
+ runtime/src/main.cpp         | 9 +++++++++
+ 2 files changed, 16 insertions(+)
+
+diff --git a/runtime/include/gpu_render.h b/runtime/include/gpu_render.h
+index 7fd5d51..fcf77df 100644
+--- a/runtime/include/gpu_render.h
++++ b/runtime/include/gpu_render.h
+@@ -36,7 +36,14 @@ int  gr_scale(void);
+  * effective scale is decided at GL context init from the driver's size limits
+  * and a memory budget (gl_scale_limits.h), so this is only an upper bound.
+  * Software and Vulkan stay at SW_MAX_INTERNAL_SCALE (4). */
++#if defined(__ANDROID__)
++/* A phone: 4x (1024 lines, about the screen height). Larger surfaces -- the
++ * full VRAM or the windowed path's tiles -- got the app ended by Android's
++ * low-memory killer on a Pixel 11 Pro. */
++#define GL_MAX_INTERNAL_SCALE 4
++#else
+ #define GL_MAX_INTERNAL_SCALE 32
++#endif
+ void gr_set_texture_filter(int bilinear);
+ int  gr_texture_filter(void);
+ 
+diff --git a/runtime/src/main.cpp b/runtime/src/main.cpp
+index 5367cf1..364207a 100644
+--- a/runtime/src/main.cpp
++++ b/runtime/src/main.cpp
+@@ -16164,6 +16164,15 @@ int main(int argc, char** argv) {
+                 dup2(fileno(log), 2);
+                 std::fclose(log);
+             }
++            /* android_env.txt: NAME=VALUE lines put into the environment
++             * (debug switches such as PSX_PRESENT_THREAD=0, no rebuild). */
++            std::ifstream envs("android_env.txt");
++            for (std::string line; std::getline(envs, line);) {
++                while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
++                const size_t eq = line.find('=');
++                if (eq != std::string::npos && eq > 0 && line[0] != '#')
++                    setenv(line.substr(0, eq).c_str(), line.substr(eq + 1).c_str(), 1);
++            }
+             std::ifstream args("android_args.txt");
+             for (std::string line; std::getline(args, line);) {
+                 while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+-- 
+2.56.0
+

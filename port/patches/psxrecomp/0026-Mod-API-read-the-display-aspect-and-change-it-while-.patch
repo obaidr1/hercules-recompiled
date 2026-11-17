@@ -1,0 +1,68 @@
+From b63d50d269d48a92ca57590a98c0def03b289b75 Mon Sep 17 00:00:00 2001
+From: obaidr1 <147771377+obaidr1@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 22:58:55 +0100
+Subject: [PATCH 26/26] Mod API: read the display aspect and change it while
+ the game runs
+
+psx_mod_get_display_aspect / psx_mod_set_display_aspect_live (what a
+title's own menu does: the window keeps its size, the picture is fitted).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ overlay_toolchain/include/mod_plugins.h | 2 ++
+ runtime/include/mod_plugins.h           | 7 +++++++
+ runtime/src/main.cpp                    | 7 +++++++
+ 3 files changed, 16 insertions(+)
+
+diff --git a/overlay_toolchain/include/mod_plugins.h b/overlay_toolchain/include/mod_plugins.h
+index 691ed40..19ff62a 100644
+--- a/overlay_toolchain/include/mod_plugins.h
++++ b/overlay_toolchain/include/mod_plugins.h
+@@ -524,6 +524,8 @@ int psx_mod_run_guest_span(struct CPUState* cpu, uint32_t start_pc,
+                            uint32_t stop_pc);
+ int psx_mod_set_auto_skip_fmv(int enabled);
+ int psx_mod_request_return_to_launcher(void);
++void psx_mod_get_display_aspect(uint32_t* numerator, uint32_t* denominator);
++int psx_mod_set_display_aspect_live(uint32_t numerator, uint32_t denominator);
+ /*
+  * NTSC timing for a PAL game ("force NTSC timings" in emulators): 60 VBlanks
+  * per guest second with NTSC line timing while the GPU keeps the PAL picture,
+diff --git a/runtime/include/mod_plugins.h b/runtime/include/mod_plugins.h
+index 441f46a..16633ec 100644
+--- a/runtime/include/mod_plugins.h
++++ b/runtime/include/mod_plugins.h
+@@ -801,6 +801,13 @@ int psx_mod_set_auto_skip_fmv(int enabled);
+  * ends the run when no launcher registered one. Returns 1 when staged.
+  */
+ int psx_mod_request_return_to_launcher(void);
++/*
++ * The display aspect now in use, and a change of it while the game runs (what
++ * a title's own menu does: the window keeps its size, the picture is fitted
++ * into it). For a title that has to narrow the view in one scene.
++ */
++void psx_mod_get_display_aspect(uint32_t* numerator, uint32_t* denominator);
++int psx_mod_set_display_aspect_live(uint32_t numerator, uint32_t denominator);
+ /*
+  * NTSC timing for a PAL game ("force NTSC timings" in emulators): 60 VBlanks
+  * per guest second with NTSC line timing while the GPU keeps the PAL picture,
+diff --git a/runtime/src/main.cpp b/runtime/src/main.cpp
+index 67b9580..0280740 100644
+--- a/runtime/src/main.cpp
++++ b/runtime/src/main.cpp
+@@ -8273,6 +8273,13 @@ extern "C" int psx_host_set_display_aspect(int num, int den) {
+     if (num * 3 != den * 4) psx_ws_set_native_wide(1);
+     return psx_debug_display_aspect(num, den, 0);
+ }
++extern "C" int psx_mod_set_display_aspect_live(uint32_t numerator, uint32_t denominator) {
++    return psx_host_set_display_aspect((int)numerator, (int)denominator);
++}
++extern "C" void psx_mod_get_display_aspect(uint32_t* numerator, uint32_t* denominator) {
++    if (numerator) *numerator = (uint32_t)g_video_aspect_num;
++    if (denominator) *denominator = (uint32_t)g_video_aspect_den;
++}
+ extern "C" void psx_host_set_fullscreen(int mode) {
+     if (mode && mode != 2) mode = 1;
+     if (mode) g_fullscreen = mode;
+-- 
+2.56.0
+

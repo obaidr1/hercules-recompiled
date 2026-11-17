@@ -1,0 +1,202 @@
+From 971d855ff85bef209e22715b5086d5332b7034f6 Mon Sep 17 00:00:00 2001
+From: obaidr1 <147771377+obaidr1@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 15:23:13 +0100
+Subject: [PATCH 19/26] GL renderer on OpenGL ES 3.2 (Android)
+
+Context: ES 3.2 profile. Shaders: #version 330 rewritten to 320 es with
+default precisions; noperspective via NV_shader_noperspective_interpolation
+(dropped without it). Dual-source blending from EXT_blend_func_extended,
+BGRA textures with GL_BGRA as internal format, no glMapBuffer / sRGB
+framebuffer. On a Pixel 11 Pro (ANGLE on Vulkan, PowerVR) every shader
+compiles and the pipeline comes up. Memory budget 64 MiB on Android (4x):
+at 6x the low-memory killer ended the app.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ runtime/include/gl_scale_limits.h |  9 +++-
+ runtime/src/gpu_gl_renderer.c     | 73 ++++++++++++++++++++++++++++---
+ runtime/src/main.cpp              |  9 ++++
+ 3 files changed, 85 insertions(+), 6 deletions(-)
+
+diff --git a/runtime/include/gl_scale_limits.h b/runtime/include/gl_scale_limits.h
+index ce1c083..bb3cd23 100644
+--- a/runtime/include/gl_scale_limits.h
++++ b/runtime/include/gl_scale_limits.h
+@@ -25,8 +25,15 @@
+ #define PSX_GL_HR_BYTES_PER_PX 8u
+ 
+ /* Default memory budget for the full-VRAM surface: 2 GiB (S = 22 by memory;
+- * the texture limit binds first on 16384-limit GPUs). */
++ * the texture limit binds first on 16384-limit GPUs). On a phone the
++ * renderer's other surfaces and the system's own memory limits bind long
++ * before that -- 6x got the app killed by Android's low-memory killer on a
++ * Pixel 11 Pro -- so 64 MiB there: S = 4 (1024 lines, about a phone's height). */
++#if defined(__ANDROID__)
++#define PSX_GL_DEFAULT_BUDGET_MB 64u
++#else
+ #define PSX_GL_DEFAULT_BUDGET_MB 2048u
++#endif
+ 
+ /* Why a scale was reduced. */
+ enum {
+diff --git a/runtime/src/gpu_gl_renderer.c b/runtime/src/gpu_gl_renderer.c
+index 3382d67..2fe17ba 100644
+--- a/runtime/src/gpu_gl_renderer.c
++++ b/runtime/src/gpu_gl_renderer.c
+@@ -105,14 +105,29 @@
+ #if defined(PSX_SDL3)
+ #include <SDL3/SDL_opengl.h>
+ #if defined(__ANDROID__)
+-/* OpenGL ES (Sprint 1 stopgap until the GLES port): no glClearDepth, and no
+- * glGetTexImage -- only the stereo / render-pass debug dumps use it, which
+- * then write blank images. glReadBuffer comes from libGLESv3. */
++/* OpenGL ES 3.2 (Android; Pixel: ANGLE on Vulkan). The renderer is the desktop
++ * GL 3.3 one with these differences:
++ *  - shaders: "#version 330" becomes "#version 320 es" plus precision lines
++ *    (es_shader_source); noperspective needs NV_shader_noperspective_
++ *    interpolation, else it is dropped (w = 1 for all but the perspective-
++ *    texturing path, so affine mapping is unchanged);
++ *  - dual-source blending comes from EXT_blend_func_extended;
++ *  - BGRA textures (EXT_texture_format_BGRA8888) take GL_BGRA as internal
++ *    format, BGRA readback is EXT_read_format_bgra;
++ *  - no glClearDepth (glClearDepthf), no glGetTexImage (the stereo / render-
++ *    pass debug dumps write blank images), no glMapBuffer (the debug present
++ *    ring stays off), no GL_FRAMEBUFFER_SRGB. */
++#define PSXGL_ES 1
+ GLAPI void APIENTRY glClearDepthf(GLfloat depth);
+ #define glClearDepth(d) glClearDepthf((GLfloat)(d))
+ static void psx_gles_no_get_tex_image(size_t bytes, void *out) { memset(out, 0, bytes); }
+ #define glGetTexImage(target, level, format, type, out) \
+     psx_gles_no_get_tex_image(n, (out))   /* both callers size their RGB image as n */
++#define PSXGL_BGRA_INTERNAL  0x80E1   /* GL_BGRA_EXT */
++#define PSXGL_BGRA_INTERNAL8 0x80E1
++#else
++#define PSXGL_BGRA_INTERNAL  GL_RGBA
++#define PSXGL_BGRA_INTERNAL8 GL_RGBA8
+ #endif
+ #else
+ #include <SDL_opengl.h>
+@@ -363,7 +378,11 @@ static int load_modern_gl(void) {
+     LOAD(p_glBindBuffer, "glBindBuffer");        LOAD(p_glBufferData, "glBufferData");
+     LOAD(p_glVertexAttribPointer, "glVertexAttribPointer");
+     LOAD(p_glEnableVertexAttribArray, "glEnableVertexAttribArray");
++#if defined(PSXGL_ES)
++    LOAD(p_glBindFragDataLocationIndexed, "glBindFragDataLocationIndexedEXT");   /* EXT_blend_func_extended */
++#else
+     LOAD(p_glBindFragDataLocationIndexed, "glBindFragDataLocationIndexed");
++#endif
+     LOAD(p_glGenFramebuffers, "glGenFramebuffers"); LOAD(p_glBindFramebuffer, "glBindFramebuffer");
+     LOAD(p_glDeleteFramebuffers, "glDeleteFramebuffers");
+     LOAD(p_glFramebufferTexture2D, "glFramebufferTexture2D");
+@@ -386,8 +405,10 @@ static int load_modern_gl(void) {
+     /* Optional (XR colour program cleanup only): never fails modern-GL init. */
+     p_glDeleteProgram       = (void *)SDL_GL_GetProcAddress("glDeleteProgram");
+     /* Optional: only the debug presented-image ring maps pack buffers. */
++#if !defined(PSXGL_ES)   /* EGL may hand out a pointer for a name it lacks */
+     p_glMapBuffer           = (void *)SDL_GL_GetProcAddress("glMapBuffer");
+     p_glUnmapBuffer         = (void *)SDL_GL_GetProcAddress("glUnmapBuffer");
++#endif
+     /* Optional: the present thread needs sync objects (GL 3.2). */
+     p_glFenceSync           = (void *)SDL_GL_GetProcAddress("glFenceSync");
+     p_glWaitSync            = (void *)SDL_GL_GetProcAddress("glWaitSync");
+@@ -2349,9 +2370,47 @@ static const char *STENCIL_FS =
+     "void main(){ vec4 c=texelFetch(u_src,ivec2(gl_FragCoord.xy)-u_off,0);\n"
+     "  if(c.a<0.5) discard; frag=vec4(0.0); }\n";
+ 
++#if defined(PSXGL_ES)
++/* "#version 330 ..." -> GLSL ES 3.20 with default precisions; drop
++ * noperspective when the driver lacks the NV extension. Caller frees. */
++static int s_es_noperspective = -1;
++static char *es_shader_source(const char *src) {
++    if (s_es_noperspective < 0) {
++        s_es_noperspective = SDL_GL_ExtensionSupported("GL_NV_shader_noperspective_interpolation") ? 1 : 0;
++        fprintf(stdout, "psxrecomp: GLES shaders (noperspective %s)\n", s_es_noperspective ? "native" : "dropped");
++    }
++    static const char head[] =
++        "#version 320 es\n"
++        "#extension GL_EXT_blend_func_extended : enable\n"
++        "#extension GL_NV_shader_noperspective_interpolation : enable\n"
++        "precision highp float;\nprecision highp int;\n"
++        "precision highp sampler2D;\nprecision highp usampler2D;\nprecision highp isampler2D;\n";
++    const char *body = src;
++    if (strncmp(body, "#version", 8) == 0) { const char *nl = strchr(body, '\n'); body = nl ? nl + 1 : body + strlen(body); }
++    const size_t n = strlen(head) + strlen(body) + 1;
++    char *out = (char *)malloc(n);
++    if (!out) return NULL;
++    strcpy(out, head);
++    char *o = out + strlen(head);
++    for (const char *p = body; *p;) {
++        if (!s_es_noperspective && strncmp(p, "noperspective ", 14) == 0) { p += 14; continue; }
++        *o++ = *p++;
++    }
++    *o = 0;
++    return out;
++}
++#endif
++
+ static GLuint compile_shader(GLenum type, const char *src) {
+     GLuint s = p_glCreateShader(type);
++#if defined(PSXGL_ES)
++    char *es = es_shader_source(src);
++    const char *use = es ? es : src;
++    p_glShaderSource(s, 1, &use, NULL);
++    free(es);
++#else
+     p_glShaderSource(s, 1, &src, NULL);
++#endif
+     p_glCompileShader(s);
+     GLint ok = 0; p_glGetShaderiv(s, PSXGL_COMPILE_STATUS, &ok);
+     if (!ok) { char log[1024]; log[0]=0; p_glGetShaderInfoLog(s, sizeof log, NULL, log);
+@@ -5629,7 +5688,7 @@ static void upload_present_tex(const uint32_t *pixels, int w, int h, int linear)
+     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+     if (w != s_present_w || h != s_present_h) {
+-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_BGRA, GL_UNSIGNED_BYTE, pixels);
++        glTexImage2D(GL_TEXTURE_2D, 0, PSXGL_BGRA_INTERNAL, w, h, 0, GL_BGRA, GL_UNSIGNED_BYTE, pixels);
+         s_present_w = w; s_present_h = h;
+     } else {
+         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_BGRA, GL_UNSIGNED_BYTE, pixels);
+@@ -8830,7 +8889,11 @@ static int openxr_copy_eye(uint32_t eye, uint32_t texture, int w, int h) {
+     StereoPair *p = &s_stereo_pair[s_stereo_current];
+     GLint read_fbo, draw_fbo; GLuint target = 0;
+     GLboolean scissor = glIsEnabled(GL_SCISSOR_TEST);
++#if defined(PSXGL_ES)
++    GLboolean srgb = GL_FALSE;            /* no GL_FRAMEBUFFER_SRGB on ES */
++#else
+     GLboolean srgb = glIsEnabled(0x8DB9); /* GL_FRAMEBUFFER_SRGB */
++#endif
+     PSXOpenXRStats xr;psx_openxr_stats(&xr);
+     glGetIntegerv(0x8CAA, &read_fbo);
+     glGetIntegerv(0x8CA6, &draw_fbo);
+@@ -9164,7 +9227,7 @@ static void gl_draw_osd_image(const uint32_t *px, int ow, int oh,
+     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+     if (s_osd_tw != ow || s_osd_th != oh) {
+-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, ow, oh, 0,
++        glTexImage2D(GL_TEXTURE_2D, 0, PSXGL_BGRA_INTERNAL8, ow, oh, 0,
+                      GL_BGRA, GL_UNSIGNED_BYTE, px);
+         s_osd_tw = ow;
+         s_osd_th = oh;
+diff --git a/runtime/src/main.cpp b/runtime/src/main.cpp
+index 919e15c..5367cf1 100644
+--- a/runtime/src/main.cpp
++++ b/runtime/src/main.cpp
+@@ -2261,6 +2261,15 @@ static void update_adaptive_widescreen() {
+  * runtime requirements immediately before every GL window, because launcher
+  * teardown resets them and macOS otherwise supplies a legacy 2.1 context. */
+ static void configure_core_gl_context_attributes() {
++#if defined(__ANDROID__)
++    /* Android: OpenGL ES 3.2 (the renderer's GLES path, gpu_gl_renderer.c). */
++    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
++    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
++    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
++    SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
++    SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
++    return;
++#endif
+     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+     int major = 3, minor = 3;
+ #if defined(PSX_OPENXR)
+-- 
+2.56.0
+

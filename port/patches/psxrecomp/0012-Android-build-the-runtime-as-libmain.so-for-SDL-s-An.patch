@@ -1,0 +1,293 @@
+From 88a68c4173fbcb4cfb621518e65c137bd5dd739d Mon Sep 17 00:00:00 2001
+From: obaidr1 <147771377+obaidr1@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 12:13:13 +0100
+Subject: [PATCH 12/26] Android: build the runtime as libmain.so for SDL's
+ Android app
+
+- psx_fiber: Bionic has no ucontext; own stack switch for AArch64 and x86-64
+  (callee-saved registers only), tested with 100k switches on device.
+- runtime.cmake: SHARED library on Android, linked to GLESv3/EGL/android/log.
+- main(): on Android run in the app's external files folder, log to
+  psxrecomp.log there, read extra arguments from android_args.txt.
+- GL renderer: glClearDepth -> glClearDepthf; glGetTexImage (debug dumps
+  only) writes blank images until the OpenGL ES port.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ runtime/runtime.cmake         |  25 ++++--
+ runtime/src/gpu_gl_renderer.c |  10 +++
+ runtime/src/main.cpp          |  28 ++++++
+ runtime/src/psx_fiber.c       | 161 ++++++++++++++++++++++++++++++++++
+ 4 files changed, 218 insertions(+), 6 deletions(-)
+
+diff --git a/runtime/runtime.cmake b/runtime/runtime.cmake
+index dbd972e..d2336c6 100644
+--- a/runtime/runtime.cmake
++++ b/runtime/runtime.cmake
+@@ -1608,12 +1608,25 @@ function(psxrecomp_add_runtime_target target)
+         set(mode_source ${PSXRECOMP_ROOT}/runtime/src/stub_interpreter.c)
+     endif()
+ 
+-    add_executable(${target}
+-        ${PSXRECOMP_RUNTIME_SOURCES}
+-        ${mode_source}
+-        ${generated_sources}
+-        ${PSXRT_EXTRAS_SOURCES}
+-    )
++    if(ANDROID)
++        # SDL's Android app (SDLActivity) loads the game as libmain.so and
++        # calls its SDL_main; there is no executable on Android.
++        add_library(${target} SHARED
++            ${PSXRECOMP_RUNTIME_SOURCES}
++            ${mode_source}
++            ${generated_sources}
++            ${PSXRT_EXTRAS_SOURCES}
++        )
++        set_target_properties(${target} PROPERTIES OUTPUT_NAME main)
++        target_link_libraries(${target} PRIVATE GLESv3 EGL android log)
++    else()
++        add_executable(${target}
++            ${PSXRECOMP_RUNTIME_SOURCES}
++            ${mode_source}
++            ${generated_sources}
++            ${PSXRT_EXTRAS_SOURCES}
++        )
++    endif()
+     target_link_libraries(${target} PRIVATE chdr-static psx_texture_image_decode)
+     psxrecomp_sha256_file(${target})
+     set(_execution_contract
+diff --git a/runtime/src/gpu_gl_renderer.c b/runtime/src/gpu_gl_renderer.c
+index b4d860c..3382d67 100644
+--- a/runtime/src/gpu_gl_renderer.c
++++ b/runtime/src/gpu_gl_renderer.c
+@@ -104,6 +104,16 @@
+ #include "psx_sdl.h"
+ #if defined(PSX_SDL3)
+ #include <SDL3/SDL_opengl.h>
++#if defined(__ANDROID__)
++/* OpenGL ES (Sprint 1 stopgap until the GLES port): no glClearDepth, and no
++ * glGetTexImage -- only the stereo / render-pass debug dumps use it, which
++ * then write blank images. glReadBuffer comes from libGLESv3. */
++GLAPI void APIENTRY glClearDepthf(GLfloat depth);
++#define glClearDepth(d) glClearDepthf((GLfloat)(d))
++static void psx_gles_no_get_tex_image(size_t bytes, void *out) { memset(out, 0, bytes); }
++#define glGetTexImage(target, level, format, type, out) \
++    psx_gles_no_get_tex_image(n, (out))   /* both callers size their RGB image as n */
++#endif
+ #else
+ #include <SDL_opengl.h>
+ #endif
+diff --git a/runtime/src/main.cpp b/runtime/src/main.cpp
+index 9bf05c8..a1bc170 100644
+--- a/runtime/src/main.cpp
++++ b/runtime/src/main.cpp
+@@ -16127,6 +16127,34 @@ static PsxGameLauncherFn g_game_launcher = nullptr;
+ extern "C" void psx_game_launcher_register(PsxGameLauncherFn fn) { g_game_launcher = fn; }
+ 
+ int main(int argc, char** argv) {
++#if defined(__ANDROID__)
++    /* Android has no working directory or console: run in the app's external
++     * files folder (game.toml, bios/, mods/ and the disc live there; adb can
++     * write it), send stdout/stderr to psxrecomp.log in it, and take extra
++     * command-line arguments from android_args.txt (one per line). */
++    static std::vector<std::string> android_args;
++    static std::vector<char*> android_argv;
++    if (const char* dir = SDL_GetAndroidExternalStoragePath()) {
++        if (chdir(dir) == 0) {
++            if (std::FILE* log = std::fopen("psxrecomp.log", "w")) {
++                dup2(fileno(log), 1);
++                dup2(fileno(log), 2);
++                std::fclose(log);
++            }
++            std::ifstream args("android_args.txt");
++            for (std::string line; std::getline(args, line);) {
++                while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
++                if (!line.empty()) android_args.push_back(line);
++            }
++        }
++    }
++    static char android_exe[] = "Hercules_Recompiled";
++    android_argv.push_back(argc > 0 && argv[0] ? argv[0] : android_exe);
++    for (std::string& a : android_args) android_argv.push_back(a.data());
++    android_argv.push_back(nullptr);
++    argc = int(android_argv.size()) - 1;
++    argv = android_argv.data();
++#endif
+     /* Force line-buffered output so messages appear even if killed. */
+     std::setvbuf(stdout, nullptr, _IOLBF, BUFSIZ);
+     std::setvbuf(stderr, nullptr, _IOLBF, BUFSIZ);
+diff --git a/runtime/src/psx_fiber.c b/runtime/src/psx_fiber.c
+index a379eca..d4ae43f 100644
+--- a/runtime/src/psx_fiber.c
++++ b/runtime/src/psx_fiber.c
+@@ -34,6 +34,167 @@ psx_fiber_t psx_fiber_create(size_t stack_size, psx_fiber_entry entry, void* arg
+ void psx_fiber_switch(psx_fiber_t target) { SwitchToFiber((LPVOID)target); }
+ void psx_fiber_destroy(psx_fiber_t fiber) { if (fiber) DeleteFiber((LPVOID)fiber); }
+ 
++#elif defined(__ANDROID__)
++/* Android: Bionic has no getcontext/makecontext/swapcontext, so switch stacks
++ * by hand. psx_fiber_swap() pushes the callee-saved registers of the AAPCS64
++ * (x19-x30, d8-d15) or System V x86-64 ABI (rbx, rbp, r12-r15) onto the
++ * running stack, stores its stack pointer, loads the target's and pops. A new
++ * fiber's stack holds such a frame whose return address is a stub that calls
++ * psx_fiber_start() with the fiber (x19 / rbx). */
++
++#include <stdint.h>
++#include <stdlib.h>
++
++typedef struct psx_fiber_impl {
++    void*           sp;       /* saved stack pointer while not running */
++    void*           stack;    /* NULL for the thread-fiber */
++    psx_fiber_entry entry;
++    void*           arg;
++} psx_fiber_impl;
++
++static psx_fiber_impl* s_current = NULL;
++
++void psx_fiber_swap(void** save_sp, void* load_sp);
++void psx_fiber_stub(void);
++
++__attribute__((used, noreturn)) void psx_fiber_start(psx_fiber_impl* f)
++{
++    f->entry(f->arg);
++    abort();   /* entries never return; see the ucontext trampoline below */
++}
++
++#if defined(__aarch64__)
++__asm__(
++    ".text\n"
++    ".p2align 2\n"
++    ".globl psx_fiber_swap\n"
++    ".hidden psx_fiber_swap\n"
++    ".type psx_fiber_swap, %function\n"
++    "psx_fiber_swap:\n"
++    "    sub sp, sp, #160\n"
++    "    stp x19, x20, [sp, #0]\n"
++    "    stp x21, x22, [sp, #16]\n"
++    "    stp x23, x24, [sp, #32]\n"
++    "    stp x25, x26, [sp, #48]\n"
++    "    stp x27, x28, [sp, #64]\n"
++    "    stp x29, x30, [sp, #80]\n"
++    "    stp d8,  d9,  [sp, #96]\n"
++    "    stp d10, d11, [sp, #112]\n"
++    "    stp d12, d13, [sp, #128]\n"
++    "    stp d14, d15, [sp, #144]\n"
++    "    mov x2, sp\n"
++    "    str x2, [x0]\n"
++    "    mov sp, x1\n"
++    "    ldp x19, x20, [sp, #0]\n"
++    "    ldp x21, x22, [sp, #16]\n"
++    "    ldp x23, x24, [sp, #32]\n"
++    "    ldp x25, x26, [sp, #48]\n"
++    "    ldp x27, x28, [sp, #64]\n"
++    "    ldp x29, x30, [sp, #80]\n"
++    "    ldp d8,  d9,  [sp, #96]\n"
++    "    ldp d10, d11, [sp, #112]\n"
++    "    ldp d12, d13, [sp, #128]\n"
++    "    ldp d14, d15, [sp, #144]\n"
++    "    add sp, sp, #160\n"
++    "    ret\n"
++    ".size psx_fiber_swap, .-psx_fiber_swap\n"
++    ".globl psx_fiber_stub\n"
++    ".hidden psx_fiber_stub\n"
++    ".type psx_fiber_stub, %function\n"
++    "psx_fiber_stub:\n"
++    "    mov x0, x19\n"
++    "    bl psx_fiber_start\n"
++    "    brk #0\n"
++    ".size psx_fiber_stub, .-psx_fiber_stub\n");
++enum { FRAME_BYTES = 160, SLOT_FIBER = 0, SLOT_RET = 11 };   /* x19, x30 */
++#elif defined(__x86_64__)
++__asm__(
++    ".text\n"
++    ".p2align 4\n"
++    ".globl psx_fiber_swap\n"
++    ".hidden psx_fiber_swap\n"
++    ".type psx_fiber_swap, @function\n"
++    "psx_fiber_swap:\n"
++    "    pushq %rbp\n"
++    "    pushq %rbx\n"
++    "    pushq %r12\n"
++    "    pushq %r13\n"
++    "    pushq %r14\n"
++    "    pushq %r15\n"
++    "    movq %rsp, (%rdi)\n"
++    "    movq %rsi, %rsp\n"
++    "    popq %r15\n"
++    "    popq %r14\n"
++    "    popq %r13\n"
++    "    popq %r12\n"
++    "    popq %rbx\n"
++    "    popq %rbp\n"
++    "    ret\n"
++    ".size psx_fiber_swap, .-psx_fiber_swap\n"
++    ".globl psx_fiber_stub\n"
++    ".hidden psx_fiber_stub\n"
++    ".type psx_fiber_stub, @function\n"
++    "psx_fiber_stub:\n"
++    "    movq %rbx, %rdi\n"
++    "    call psx_fiber_start\n"
++    "    ud2\n"
++    ".size psx_fiber_stub, .-psx_fiber_stub\n");
++/* six pushed registers + return address; the stub is entered 16-byte aligned
++ * (as after a call's return), so its own call leaves rsp % 16 == 8 */
++enum { FRAME_BYTES = 56, SLOT_FIBER = 4, SLOT_RET = 6 };       /* rbx, ret */
++#else
++#  error "psx_fiber: no Android stack switch for this architecture"
++#endif
++
++psx_fiber_t psx_fiber_convert_thread(void)
++{
++    if (!s_current) {
++        psx_fiber_impl* f = (psx_fiber_impl*)calloc(1, sizeof(*f));
++        s_current = f;
++    }
++    return (psx_fiber_t)s_current;
++}
++
++psx_fiber_t psx_fiber_current(void) { return (psx_fiber_t)s_current; }
++
++psx_fiber_t psx_fiber_create(size_t stack_size, psx_fiber_entry entry, void* arg)
++{
++    if (stack_size < 65536) stack_size = 65536;
++    psx_fiber_impl* f = (psx_fiber_impl*)calloc(1, sizeof(*f));
++    if (!f) return NULL;
++    f->stack = malloc(stack_size);
++    if (!f->stack) { free(f); return NULL; }
++    f->entry = entry;
++    f->arg   = arg;
++    uintptr_t top = ((uintptr_t)f->stack + stack_size) & ~(uintptr_t)15;
++#if defined(__x86_64__)
++    top -= 16;   /* keep the slot above the return address inside the stack */
++#endif
++    uintptr_t* frame = (uintptr_t*)(top - FRAME_BYTES);
++    for (int i = 0; i < FRAME_BYTES / 8; ++i) frame[i] = 0;
++    frame[SLOT_FIBER] = (uintptr_t)f;
++    frame[SLOT_RET]   = (uintptr_t)&psx_fiber_stub;
++    f->sp = frame;
++    return (psx_fiber_t)f;
++}
++
++void psx_fiber_switch(psx_fiber_t target)
++{
++    psx_fiber_impl* to   = (psx_fiber_impl*)target;
++    psx_fiber_impl* from = s_current;
++    if (!to || to == from) return;
++    s_current = to;
++    psx_fiber_swap(&from->sp, to->sp);
++}
++
++void psx_fiber_destroy(psx_fiber_t fiber)
++{
++    psx_fiber_impl* f = (psx_fiber_impl*)fiber;
++    if (!f) return;
++    free(f->stack);
++    free(f);
++}
++
+ #else /* POSIX: ucontext */
+ 
+ #ifndef _XOPEN_SOURCE
+-- 
+2.56.0
+

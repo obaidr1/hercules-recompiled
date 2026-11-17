@@ -1,0 +1,594 @@
+From 297b4d267576e748c43382850290e3660bc9c617 Mon Sep 17 00:00:00 2001
+From: obaidr1 <147771377+obaidr1@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 13:40:06 +0100
+Subject: [PATCH 14/26] Android: touch controls, in-process launcher start,
+ fullscreen
+
+- touch_pad: on-screen D-pad, face buttons, L1/L2/R1/R2, Select/Start in the
+  letterbox bars, driving an SDL virtual gamepad (hidden while a real pad is
+  connected). Drawn with the host OSD; triggers rest at the axis minimum.
+- psx_game_launcher.h: PSX_GAME_LAUNCHER_RUN_HERE lets a launcher hand the
+  disc to main() and boot the game in the same process (no process spawn on
+  Android).
+- P1 defaults to the first gamepad on Android (no keyboard); the game window
+  is always fullscreen there.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ runtime/include/psx_game_launcher.h |   5 +
+ runtime/include/touch_pad.h         |  28 ++
+ runtime/runtime.cmake               |   1 +
+ runtime/src/host_osd.c              |   2 +
+ runtime/src/main.cpp                |  30 +-
+ runtime/src/touch_pad.c             | 407 ++++++++++++++++++++++++++++
+ 6 files changed, 470 insertions(+), 3 deletions(-)
+ create mode 100644 runtime/include/touch_pad.h
+ create mode 100644 runtime/src/touch_pad.c
+
+diff --git a/runtime/include/psx_game_launcher.h b/runtime/include/psx_game_launcher.h
+index 0c99968..9b99077 100644
+--- a/runtime/include/psx_game_launcher.h
++++ b/runtime/include/psx_game_launcher.h
+@@ -12,6 +12,11 @@
+ extern "C" {
+ #endif
+ typedef int (*PsxGameLauncherFn)(int argc, char** argv);
++/* Where a process cannot start another (Android), the launcher instead closes
++ * its window, sets PSX_LAUNCH_DISC (and any PSX_* environment the game reads)
++ * and returns this: main() then boots the game in the same process, as if
++ * started with --no-launcher --disc $PSX_LAUNCH_DISC. */
++#define PSX_GAME_LAUNCHER_RUN_HERE 0x5245   /* 'RE' */
+ void psx_game_launcher_register(PsxGameLauncherFn fn);
+ #ifdef __cplusplus
+ }
+diff --git a/runtime/include/touch_pad.h b/runtime/include/touch_pad.h
+new file mode 100644
+index 0000000..18d6ed0
+--- /dev/null
++++ b/runtime/include/touch_pad.h
+@@ -0,0 +1,28 @@
++#ifndef PSX_TOUCH_PAD_H
++#define PSX_TOUCH_PAD_H
++/*
++ * On-screen touch controls (Android): D-pad, the four face buttons, L1/L2/R1/R2,
++ * Select and Start, drawn half-transparent at the screen sides over the
++ * letterbox bars. They drive an SDL virtual gamepad, so the runtime sees an
++ * ordinary controller (Player 1 picks it like a physical pad). Hidden while a
++ * physical gamepad is connected.
++ *
++ * On by default on Android, off elsewhere; PSX_TOUCH_PAD=0/1 overrides.
++ */
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++union SDL_Event;
++struct SDL_Renderer;
++
++/* Feed every host event; returns 1 when it was a touch the pad consumed. */
++int touch_pad_event(const union SDL_Event *ev);
++
++/* Draw over the composed frame (software / SDL_Renderer present path). */
++void touch_pad_draw_sdl(struct SDL_Renderer *renderer);
++
++#ifdef __cplusplus
++}
++#endif
++#endif /* PSX_TOUCH_PAD_H */
+diff --git a/runtime/runtime.cmake b/runtime/runtime.cmake
+index d2336c6..188eb32 100644
+--- a/runtime/runtime.cmake
++++ b/runtime/runtime.cmake
+@@ -436,6 +436,7 @@ set(PSXRECOMP_RUNTIME_SOURCES
+     ${PSXRECOMP_ROOT}/runtime/src/psx_debug_overlay.c
+     ${PSXRECOMP_ROOT}/runtime/src/psx_rewind.c
+     ${PSXRECOMP_ROOT}/runtime/src/host_osd.c
++    ${PSXRECOMP_ROOT}/runtime/src/touch_pad.c
+     ${PSXRECOMP_ROOT}/runtime/src/host_keymap.c
+     ${PSXRECOMP_ROOT}/runtime/src/cosim_state.c
+     ${PSXRECOMP_ROOT}/runtime/src/cosim.c
+diff --git a/runtime/src/host_osd.c b/runtime/src/host_osd.c
+index 3562844..d8f990c 100644
+--- a/runtime/src/host_osd.c
++++ b/runtime/src/host_osd.c
+@@ -4,6 +4,7 @@
+  * remains available for headless / launcher-less builds. */
+ 
+ #include "host_osd.h"
++#include "touch_pad.h"
+ #include "psx_rewind.h"
+ #include "psx_savestate_menu.h"
+ #include "psx_sdl.h"
+@@ -547,6 +548,7 @@ void host_osd_draw_sdl(struct SDL_Renderer *renderer) {
+                           &s_sdl_ssm_th, px, w, h, 0, 0, lw, lh);
+         }
+     }
++    touch_pad_draw_sdl(renderer);   /* on-screen controls (Android) over everything */
+ #else
+     (void)renderer;
+ #endif /* PSX_SDL_NO_RENDER */
+diff --git a/runtime/src/main.cpp b/runtime/src/main.cpp
+index 03584d5..2c6587c 100644
+--- a/runtime/src/main.cpp
++++ b/runtime/src/main.cpp
+@@ -55,6 +55,7 @@ extern "C" void psx_event_step_conservative_env_init(void);
+ #include "pgxp_session.h"
+ #include "interrupts.h"
+ #include "psx_video_timing.h"
++#include "touch_pad.h"
+ #include "present_ring.h"
+ #include "load_transition_ring.h"
+ #include "gpu_sw_renderer.h"
+@@ -8378,6 +8379,7 @@ static bool debug_overlay_mouse_event(const SDL_Event& ev) {
+ static bool drain_host_events() {
+     SDL_Event ev;
+     while (SDL_PollEvent(&ev)) {
++        if (touch_pad_event(&ev)) continue;
+         if (debug_overlay_mouse_event(ev)) continue;
+         if (psx_local_mouse_event(ev)) continue;
+         if (ev.type == SDL_QUIT) {
+@@ -16367,8 +16369,24 @@ int main(int argc, char** argv) {
+     /* A launcher compiled into the title (psx_game_launcher.h) runs first. */
+     if (g_game_launcher && !force_no_launcher && !g_headless) {
+         const char* env = std::getenv("PSX_NO_LAUNCHER");
+-        if (!env || !env[0] || env[0] == '0')
+-            return g_game_launcher(argc, argv);
++        if (!env || !env[0] || env[0] == '0') {
++            const int rc = g_game_launcher(argc, argv);
++            const char* disc = std::getenv("PSX_LAUNCH_DISC");
++            if (rc != PSX_GAME_LAUNCHER_RUN_HERE || !disc || !disc[0])
++                return rc;
++            /* Boot the game here: same as --no-launcher --disc <disc>. */
++            static std::string launch_disc;
++            static char opt_disc[] = "--disc";
++            static char* launch_argv[4];
++            launch_disc = disc;
++            launch_argv[0] = argv[0];
++            launch_argv[1] = opt_disc;
++            launch_argv[2] = launch_disc.data();
++            launch_argv[3] = nullptr;
++            disc_override_path = launch_argv[2];
++            argc = 3;
++            argv = launch_argv;
++        }
+     }
+ 
+     std::string default_game_config_storage;
+@@ -16414,7 +16432,9 @@ int main(int argc, char** argv) {
+     int  player_deadzone[PSX_MAX_PLAYERS];
+     int  ctrl_locked_mode[PSX_MAX_PLAYERS];
+     for (int i = 0; i < PSX_MAX_PLAYERS; ++i) {
+-#if defined(PSX_DEBUG_TOOLS)
++#if defined(PSX_DEBUG_TOOLS) || defined(__ANDROID__)
++        /* Android: no keyboard; P1 is the first gamepad, which is the touch
++         * controls' virtual pad unless a real one is connected. */
+         player_device[i] = (i == 0) ? "auto" : "none";
+ #else
+         player_device[i] = (i == 0) ? "keyboard" : "none";
+@@ -19573,6 +19593,10 @@ session_reboot:
+      * the image scales to fill the larger window with no further distortion. */
+     int game_w = g_video_win_w, game_h = 0;
+     clamp_window_aspect(&game_w, &game_h, g_video_aspect_num, g_video_aspect_den);
++#if defined(__ANDROID__)
++    /* Android: always the whole screen, without status and navigation bars. */
++    win_flags |= SDL_WINDOW_FULLSCREEN;
++#endif
+     sdl_window = SDL_CreateWindow(
+         window_title.c_str(),
+         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+diff --git a/runtime/src/touch_pad.c b/runtime/src/touch_pad.c
+new file mode 100644
+index 0000000..271d25e
+--- /dev/null
++++ b/runtime/src/touch_pad.c
+@@ -0,0 +1,407 @@
++/*
++ * touch_pad.c -- on-screen touch controls driving an SDL virtual gamepad.
++ * See touch_pad.h.
++ *
++ * Layout in units of the screen height h (landscape): the D-pad sits in the
++ * left letterbox bar, the face buttons mirror it on the right, shoulder
++ * buttons and Select/Start above them. On a 20:9 phone the 4:3 picture leaves
++ * ~0.45 h per side, so nothing covers the game; narrower screens overlap it
++ * half-transparently. Each finger is tracked on its own: a D-pad finger
++ * steers by angle (8 directions) and may slide; a button finger presses
++ * whatever button it is over, so sliding between face buttons works.
++ */
++#include "touch_pad.h"
++
++#if defined(PSX_SDL3) && !defined(PSX_SDL_NO_RENDER)
++
++#include <SDL3/SDL.h>
++#include <math.h>
++#include <stdlib.h>
++#include <string.h>
++
++#include "host_osd.h"
++
++#ifndef M_PI
++#define M_PI 3.14159265358979323846
++#endif
++
++enum {
++    TP_UP, TP_DOWN, TP_LEFT, TP_RIGHT,
++    TP_CROSS, TP_CIRCLE, TP_SQUARE, TP_TRIANGLE,
++    TP_L1, TP_R1, TP_L2, TP_R2, TP_SELECT, TP_START,
++    TP_COUNT
++};
++#define TP_DPAD   100   /* finger owns the D-pad */
++#define TP_NONE   (-1)
++#define MAX_FINGERS 10
++
++typedef struct { float x, y, r; } Disc;       /* centre and radius, pixels */
++typedef struct { float x, y, w, h; } Box;
++
++typedef struct {
++    float W, H;                  /* output size the layout was made for */
++    Disc dpad;                   /* r = half the cross size */
++    Disc face[4];                /* cross, circle, square, triangle */
++    Box  shoulder[4];            /* L1, R1, L2, R2 */
++    Box  meta[2];                /* select, start */
++} Layout;
++
++static int       s_enabled = -1;
++static int       s_ready;
++static SDL_Joystick* s_joy;
++static SDL_JoystickID s_joy_id;
++static Layout    s_lay;
++static struct { SDL_FingerID id; int on; int what; float x, y; } s_fingers[MAX_FINGERS];
++static uint32_t  s_pressed;      /* bit per TP_* */
++
++static int enabled(void)
++{
++    if (s_enabled < 0) {
++        const char* e = SDL_getenv("PSX_TOUCH_PAD");
++#if defined(__ANDROID__)
++        s_enabled = !(e && *e == '0');
++#else
++        s_enabled = e && *e && *e != '0';
++#endif
++    }
++    return s_enabled;
++}
++
++static void make_layout(float W, float H)
++{
++    const float h = H;
++    Layout* L = &s_lay;
++    L->W = W; L->H = H;
++    const float cy = 0.64f * h;                       /* D-pad / face centre height */
++    L->dpad = (Disc){ 0.24f * h, cy, 0.19f * h };
++    const float fx = W - 0.24f * h, d = 0.125f * h, br = 0.068f * h;
++    L->face[0] = (Disc){ fx,     cy + d, br };       /* cross: bottom */
++    L->face[1] = (Disc){ fx + d, cy,     br };       /* circle: right */
++    L->face[2] = (Disc){ fx - d, cy,     br };       /* square: left */
++    L->face[3] = (Disc){ fx,     cy - d, br };       /* triangle: top */
++    const float sw = 0.17f * h, sh = 0.085f * h, sy = 0.06f * h;
++    L->shoulder[0] = (Box){ 0.05f * h,          sy, sw, sh };          /* L1 */
++    L->shoulder[1] = (Box){ W - 0.05f * h - sw, sy, sw, sh };          /* R1 */
++    L->shoulder[2] = (Box){ 0.05f * h,          sy + sh + 0.03f * h, sw, sh };   /* L2 */
++    L->shoulder[3] = (Box){ W - 0.05f * h - sw, sy + sh + 0.03f * h, sw, sh };   /* R2 */
++    const float mw = 0.15f * h, mh = 0.065f * h, my = 0.30f * h;
++    L->meta[0] = (Box){ 0.24f * h - mw / 2,     my, mw, mh };           /* select */
++    L->meta[1] = (Box){ W - 0.24f * h - mw / 2, my, mw, mh };           /* start */
++}
++
++static int physical_gamepad_present(void)
++{
++    int n = 0, found = 0;
++    SDL_JoystickID* ids = SDL_GetGamepads(&n);
++    for (int i = 0; ids && i < n; ++i)
++        if (ids[i] != s_joy_id) { found = 1; break; }
++    SDL_free(ids);
++    return found;
++}
++
++static void ensure_ready(void)
++{
++    if (s_ready) return;
++    s_ready = 1;
++    /* Taps are controls, not mouse clicks. */
++    SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");
++    if (!SDL_WasInit(SDL_INIT_GAMEPAD)) SDL_InitSubSystem(SDL_INIT_GAMEPAD);
++    SDL_VirtualJoystickDesc desc;
++    SDL_INIT_INTERFACE(&desc);
++    desc.type = SDL_JOYSTICK_TYPE_GAMEPAD;
++    desc.naxes = SDL_GAMEPAD_AXIS_COUNT;
++    desc.nbuttons = SDL_GAMEPAD_BUTTON_COUNT;
++    desc.name = "Touch controls";
++    s_joy_id = SDL_AttachVirtualJoystick(&desc);
++    if (s_joy_id) s_joy = SDL_OpenJoystick(s_joy_id);
++    if (!s_joy) { SDL_Log("touch_pad: no virtual gamepad: %s", SDL_GetError()); return; }
++    /* Trigger axes rest at the minimum: a raw 0 reads as half pressed. */
++    SDL_SetJoystickVirtualAxis(s_joy, SDL_GAMEPAD_AXIS_LEFT_TRIGGER, SDL_JOYSTICK_AXIS_MIN);
++    SDL_SetJoystickVirtualAxis(s_joy, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER, SDL_JOYSTICK_AXIS_MIN);
++}
++
++static void push_state(uint32_t pressed)
++{
++    if (pressed == s_pressed || !s_joy) { s_pressed = pressed; return; }
++    s_pressed = pressed;
++    static const struct { int tp, button; } map[] = {
++        {TP_UP, SDL_GAMEPAD_BUTTON_DPAD_UP}, {TP_DOWN, SDL_GAMEPAD_BUTTON_DPAD_DOWN},
++        {TP_LEFT, SDL_GAMEPAD_BUTTON_DPAD_LEFT}, {TP_RIGHT, SDL_GAMEPAD_BUTTON_DPAD_RIGHT},
++        {TP_CROSS, SDL_GAMEPAD_BUTTON_SOUTH}, {TP_CIRCLE, SDL_GAMEPAD_BUTTON_EAST},
++        {TP_SQUARE, SDL_GAMEPAD_BUTTON_WEST}, {TP_TRIANGLE, SDL_GAMEPAD_BUTTON_NORTH},
++        {TP_L1, SDL_GAMEPAD_BUTTON_LEFT_SHOULDER}, {TP_R1, SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER},
++        {TP_SELECT, SDL_GAMEPAD_BUTTON_BACK}, {TP_START, SDL_GAMEPAD_BUTTON_START},
++    };
++    for (size_t i = 0; i < sizeof map / sizeof map[0]; ++i)
++        SDL_SetJoystickVirtualButton(s_joy, map[i].button, (pressed >> map[i].tp) & 1);
++    SDL_SetJoystickVirtualAxis(s_joy, SDL_GAMEPAD_AXIS_LEFT_TRIGGER,
++                               (pressed >> TP_L2) & 1 ? SDL_JOYSTICK_AXIS_MAX : SDL_JOYSTICK_AXIS_MIN);
++    SDL_SetJoystickVirtualAxis(s_joy, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER,
++                               (pressed >> TP_R2) & 1 ? SDL_JOYSTICK_AXIS_MAX : SDL_JOYSTICK_AXIS_MIN);
++}
++
++static int in_box(const Box* b, float x, float y, float pad)
++{
++    return x >= b->x - pad && x < b->x + b->w + pad && y >= b->y - pad && y < b->y + b->h + pad;
++}
++
++/* What a finger at (x, y) presses: TP_DPAD, a button bit, or TP_NONE. */
++static int hit(float x, float y)
++{
++    const Layout* L = &s_lay;
++    const float dx = x - L->dpad.x, dy = y - L->dpad.y;
++    if (dx * dx + dy * dy <= (1.35f * L->dpad.r) * (1.35f * L->dpad.r)) return TP_DPAD;
++    int best = TP_NONE;
++    float bd = 1e30f;
++    for (int i = 0; i < 4; ++i) {                     /* nearest face button in reach */
++        const float ex = x - L->face[i].x, ey = y - L->face[i].y, d2 = ex * ex + ey * ey;
++        const float reach = 1.45f * L->face[i].r;
++        if (d2 <= reach * reach && d2 < bd) { bd = d2; best = TP_CROSS + i; }
++    }
++    if (best != TP_NONE) return best;
++    const float pad = 0.02f * L->H;
++    for (int i = 0; i < 4; ++i) if (in_box(&L->shoulder[i], x, y, pad)) return TP_L1 + i;
++    for (int i = 0; i < 2; ++i) if (in_box(&L->meta[i], x, y, pad)) return TP_SELECT + i;
++    return TP_NONE;
++}
++
++/* D-pad bits for a finger at (x, y): 8 sectors, small dead zone. */
++static uint32_t dpad_bits(float x, float y)
++{
++    const float dx = x - s_lay.dpad.x, dy = y - s_lay.dpad.y;
++    if (dx * dx + dy * dy < (0.22f * s_lay.dpad.r) * (0.22f * s_lay.dpad.r)) return 0;
++    const float a = atan2f(dy, dx);                   /* 0 = right, +pi/2 = down */
++    const int s = ((int)floorf((a + (float)M_PI) / ((float)M_PI / 4) + 0.5f)) & 7;
++    /* sector 0 = left, then clockwise: up-left, up, up-right, right, ... */
++    static const uint32_t bits[8] = {
++        1u << TP_LEFT, (1u << TP_LEFT) | (1u << TP_UP), 1u << TP_UP, (1u << TP_UP) | (1u << TP_RIGHT),
++        1u << TP_RIGHT, (1u << TP_RIGHT) | (1u << TP_DOWN), 1u << TP_DOWN, (1u << TP_DOWN) | (1u << TP_LEFT),
++    };
++    return bits[s];
++}
++
++static uint32_t collect(void)
++{
++    uint32_t p = 0;
++    for (int i = 0; i < MAX_FINGERS; ++i) {
++        if (!s_fingers[i].on) continue;
++        if (s_fingers[i].what == TP_DPAD) p |= dpad_bits(s_fingers[i].x, s_fingers[i].y);
++        else if (s_fingers[i].what != TP_NONE) p |= 1u << s_fingers[i].what;
++    }
++    return p;
++}
++
++int touch_pad_event(const union SDL_Event* ev)
++{
++    if (!enabled()) return 0;
++    const Uint32 t = ev->type;
++    if (t != SDL_EVENT_FINGER_DOWN && t != SDL_EVENT_FINGER_MOTION && t != SDL_EVENT_FINGER_UP &&
++        t != SDL_EVENT_FINGER_CANCELED)
++        return 0;
++    ensure_ready();
++    int pw = 0, ph = 0;
++    SDL_Window* w = SDL_GetWindowFromID(ev->tfinger.windowID);
++    if (w) SDL_GetWindowSizeInPixels(w, &pw, &ph);
++    if (pw <= 0 || ph <= 0) return 1;
++    if (s_lay.W != (float)pw || s_lay.H != (float)ph) make_layout((float)pw, (float)ph);
++    const float x = ev->tfinger.x * (float)pw, y = ev->tfinger.y * (float)ph;
++    int slot = -1, free_slot = -1;
++    for (int i = 0; i < MAX_FINGERS; ++i) {
++        if (s_fingers[i].on && s_fingers[i].id == ev->tfinger.fingerID) slot = i;
++        else if (!s_fingers[i].on && free_slot < 0) free_slot = i;
++    }
++    if (t == SDL_EVENT_FINGER_DOWN) {
++        if (slot < 0) slot = free_slot;
++        if (slot < 0) return 1;
++        s_fingers[slot].on = 1;
++        s_fingers[slot].id = ev->tfinger.fingerID;
++        s_fingers[slot].what = hit(x, y);
++        SDL_Log("touch_pad: finger down at %.0f,%.0f of %dx%d -> %d", x, y, pw, ph, s_fingers[slot].what);
++    } else if (slot < 0) {
++        return 1;
++    } else if (t == SDL_EVENT_FINGER_MOTION) {
++        if (s_fingers[slot].what != TP_DPAD) {        /* slide between buttons */
++            const int now = hit(x, y);
++            s_fingers[slot].what = now == TP_DPAD ? TP_NONE : now;
++        }
++    } else {
++        s_fingers[slot].on = 0;
++    }
++    s_fingers[slot].x = x;
++    s_fingers[slot].y = y;
++    push_state(collect());
++    return 1;
++}
++
++/* ------------------------------------------------------------- drawing */
++
++static void fill_disc(SDL_Renderer* r, float cx, float cy, float rad, SDL_FColor c)
++{
++    enum { N = 40 };
++    SDL_Vertex v[N + 1];
++    int idx[N * 3];
++    v[0].position = (SDL_FPoint){ cx, cy };
++    v[0].color = c;
++    for (int i = 0; i < N; ++i) {
++        const float a = (float)i * 2.0f * (float)M_PI / N;
++        v[i + 1].position = (SDL_FPoint){ cx + rad * cosf(a), cy + rad * sinf(a) };
++        v[i + 1].color = c;
++        idx[i * 3] = 0; idx[i * 3 + 1] = i + 1; idx[i * 3 + 2] = (i + 1) % N + 1;
++    }
++    SDL_RenderGeometry(r, NULL, v, N + 1, idx, N * 3);
++}
++
++static void ring(SDL_Renderer* r, float cx, float cy, float rad, float width, SDL_FColor c)
++{
++    enum { N = 40 };
++    SDL_Vertex v[N * 2];
++    int idx[N * 6];
++    for (int i = 0; i < N; ++i) {
++        const float a = (float)i * 2.0f * (float)M_PI / N, ca = cosf(a), sa = sinf(a);
++        v[i * 2].position = (SDL_FPoint){ cx + rad * ca, cy + rad * sa };
++        v[i * 2 + 1].position = (SDL_FPoint){ cx + (rad - width) * ca, cy + (rad - width) * sa };
++        v[i * 2].color = v[i * 2 + 1].color = c;
++        const int j = (i + 1) % N;
++        int* q = &idx[i * 6];
++        q[0] = i * 2; q[1] = i * 2 + 1; q[2] = j * 2;
++        q[3] = j * 2; q[4] = i * 2 + 1; q[5] = j * 2 + 1;
++    }
++    SDL_RenderGeometry(r, NULL, v, N * 2, idx, N * 6);
++}
++
++static void thick_line(SDL_Renderer* r, float x0, float y0, float x1, float y1, float w, SDL_FColor c)
++{
++    const float dx = x1 - x0, dy = y1 - y0, len = sqrtf(dx * dx + dy * dy);
++    if (len <= 0) return;
++    const float nx = -dy / len * w / 2, ny = dx / len * w / 2;
++    SDL_Vertex v[4] = {
++        {{x0 + nx, y0 + ny}, c, {0, 0}}, {{x0 - nx, y0 - ny}, c, {0, 0}},
++        {{x1 + nx, y1 + ny}, c, {0, 0}}, {{x1 - nx, y1 - ny}, c, {0, 0}},
++    };
++    const int idx[6] = {0, 1, 2, 2, 1, 3};
++    SDL_RenderGeometry(r, NULL, v, 4, idx, 6);
++}
++
++static void fill_box(SDL_Renderer* r, const Box* b, SDL_FColor c)
++{
++    SDL_SetRenderDrawColorFloat(r, c.r, c.g, c.b, c.a);
++    const SDL_FRect fr = { b->x, b->y, b->w, b->h };
++    SDL_RenderFillRect(r, &fr);
++}
++
++/* Centred label in the OSD's 8x8 font. */
++static void label(SDL_Renderer* r, const char* s, float cx, float cy, float px, SDL_FColor c)
++{
++    const int n = (int)strlen(s);
++    float x = cx - n * 8 * px / 2, y = cy - 8 * px / 2;
++    SDL_SetRenderDrawColorFloat(r, c.r, c.g, c.b, c.a);
++    for (int k = 0; k < n; ++k, x += 8 * px) {
++        const uint8_t* g = host_osd_glyph((unsigned char)s[k]);
++        if (!g) continue;
++        for (int row = 0; row < 8; ++row)
++            for (int col = 0; col < 8; ++col)
++                if (g[row] & (1u << col)) {
++                    const SDL_FRect p = { x + col * px, y + row * px, px, px };
++                    SDL_RenderFillRect(r, &p);
++                }
++    }
++}
++
++void touch_pad_draw_sdl(struct SDL_Renderer* r)
++{
++    if (!r || !enabled()) return;
++    ensure_ready();
++    if (physical_gamepad_present()) {                 /* a real pad takes over */
++        if (s_pressed) push_state(0);
++        memset(s_fingers, 0, sizeof s_fingers);
++        return;
++    }
++    /* Draw in output pixels over the whole screen, not the game's logical
++     * 4:3 area, so the controls can sit in the letterbox bars. */
++    int lw = 0, lh = 0;
++    SDL_RendererLogicalPresentation mode = SDL_LOGICAL_PRESENTATION_DISABLED;
++    SDL_GetRenderLogicalPresentation(r, &lw, &lh, &mode);
++    SDL_Rect vp;
++    const bool had_vp = SDL_RenderViewportSet(r);
++    SDL_GetRenderViewport(r, &vp);
++    float sx = 1, sy = 1;
++    SDL_GetRenderScale(r, &sx, &sy);
++    SDL_BlendMode bm;
++    SDL_GetRenderDrawBlendMode(r, &bm);
++    SDL_SetRenderLogicalPresentation(r, 0, 0, SDL_LOGICAL_PRESENTATION_DISABLED);
++    SDL_SetRenderViewport(r, NULL);
++    SDL_SetRenderScale(r, 1, 1);
++    SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_BLEND);
++
++    int W = 0, H = 0;
++    SDL_GetCurrentRenderOutputSize(r, &W, &H);
++    if (W > 0 && H > 0) {
++        if (s_lay.W != (float)W || s_lay.H != (float)H) make_layout((float)W, (float)H);
++        const Layout* L = &s_lay;
++        const SDL_FColor base = {1, 1, 1, 0.16f}, edge = {1, 1, 1, 0.38f}, hot = {1, 1, 1, 0.42f};
++        const float u = (float)H / 100.0f;              /* 1 % of the height */
++        /* D-pad: a cross, the pressed arms brighter */
++        const float a = L->dpad.r, t = 0.36f * L->dpad.r;
++        const Box arms[4] = {
++            { L->dpad.x - t / 2, L->dpad.y - a, t, a - t / 2 },          /* up */
++            { L->dpad.x - t / 2, L->dpad.y + t / 2, t, a - t / 2 },      /* down */
++            { L->dpad.x - a, L->dpad.y - t / 2, a - t / 2, t },          /* left */
++            { L->dpad.x + t / 2, L->dpad.y - t / 2, a - t / 2, t },      /* right */
++        };
++        const Box hub = { L->dpad.x - t / 2, L->dpad.y - t / 2, t, t };
++        for (int i = 0; i < 4; ++i) fill_box(r, &arms[i], (s_pressed >> (TP_UP + i)) & 1 ? hot : base);
++        fill_box(r, &hub, base);
++        ring(r, L->dpad.x, L->dpad.y, a * 1.08f, 0.35f * u, edge);
++        /* Face buttons with their PlayStation symbols */
++        const SDL_FColor sym[4] = {
++            {0.55f, 0.70f, 1.00f, 0.85f}, {1.00f, 0.45f, 0.50f, 0.85f},   /* cross, circle */
++            {1.00f, 0.60f, 0.85f, 0.85f}, {0.40f, 0.90f, 0.70f, 0.85f},   /* square, triangle */
++        };
++        for (int i = 0; i < 4; ++i) {
++            const Disc* d = &L->face[i];
++            fill_disc(r, d->x, d->y, d->r, (s_pressed >> (TP_CROSS + i)) & 1 ? hot : base);
++            ring(r, d->x, d->y, d->r, 0.3f * u, edge);
++            const float s = 0.45f * d->r, lw2 = 0.55f * u;
++            if (i == 0) {
++                thick_line(r, d->x - s, d->y - s, d->x + s, d->y + s, lw2, sym[0]);
++                thick_line(r, d->x - s, d->y + s, d->x + s, d->y - s, lw2, sym[0]);
++            } else if (i == 1) {
++                ring(r, d->x, d->y, s * 1.1f, lw2, sym[1]);
++            } else if (i == 2) {
++                thick_line(r, d->x - s, d->y - s, d->x + s, d->y - s, lw2, sym[2]);
++                thick_line(r, d->x + s, d->y - s, d->x + s, d->y + s, lw2, sym[2]);
++                thick_line(r, d->x + s, d->y + s, d->x - s, d->y + s, lw2, sym[2]);
++                thick_line(r, d->x - s, d->y + s, d->x - s, d->y - s, lw2, sym[2]);
++            } else {
++                const float tx = 1.15f * s;
++                thick_line(r, d->x, d->y - tx, d->x + tx, d->y + 0.7f * tx, lw2, sym[3]);
++                thick_line(r, d->x + tx, d->y + 0.7f * tx, d->x - tx, d->y + 0.7f * tx, lw2, sym[3]);
++                thick_line(r, d->x - tx, d->y + 0.7f * tx, d->x, d->y - tx, lw2, sym[3]);
++            }
++        }
++        static const char* names[6] = {"L1", "R1", "L2", "R2", "SELECT", "START"};
++        const SDL_FColor text = {1, 1, 1, 0.75f};
++        for (int i = 0; i < 4; ++i) {
++            const Box* b = &L->shoulder[i];
++            fill_box(r, b, (s_pressed >> (TP_L1 + i)) & 1 ? hot : base);
++            label(r, names[i], b->x + b->w / 2, b->y + b->h / 2, 0.45f * u, text);
++        }
++        for (int i = 0; i < 2; ++i) {
++            const Box* b = &L->meta[i];
++            fill_box(r, b, (s_pressed >> (TP_SELECT + i)) & 1 ? hot : base);
++            label(r, names[4 + i], b->x + b->w / 2, b->y + b->h / 2, 0.28f * u, text);
++        }
++    }
++
++    SDL_SetRenderDrawBlendMode(r, bm);
++    SDL_SetRenderScale(r, sx, sy);
++    SDL_SetRenderViewport(r, had_vp ? &vp : NULL);
++    SDL_SetRenderLogicalPresentation(r, lw, lh, mode);
++}
++
++#else   /* no SDL3 renderer: nothing to draw, nothing to read */
++
++int touch_pad_event(const union SDL_Event* ev) { (void)ev; return 0; }
++void touch_pad_draw_sdl(struct SDL_Renderer* r) { (void)r; }
++
++#endif
+-- 
+2.56.0
+

@@ -1,0 +1,69 @@
+From c38d4273fe9e2f4b95810972605ec48c37ef9f18 Mon Sep 17 00:00:00 2001
+From: obaidr1 <147771377+obaidr1@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 14:40:45 +0100
+Subject: [PATCH 15/26] Android: back gesture opens the in-game menu; menu
+ drawn on the SDL path
+
+The in-game menu picture was composited only by the GL renderer; the
+software/SDL present path draws it now too. Touch controls also drive the
+menu's pause loop.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ runtime/src/host_osd.c | 10 ++++++++++
+ runtime/src/main.cpp   |  4 +++-
+ 2 files changed, 13 insertions(+), 1 deletion(-)
+
+diff --git a/runtime/src/host_osd.c b/runtime/src/host_osd.c
+index d8f990c..33b5ca6 100644
+--- a/runtime/src/host_osd.c
++++ b/runtime/src/host_osd.c
+@@ -174,6 +174,11 @@ static int          s_sdl_rw_th;
+ static SDL_Texture *s_sdl_ssm_tex;
+ static int          s_sdl_ssm_tw;
+ static int          s_sdl_ssm_th;
++static SDL_Texture *s_sdl_gm_tex;     /* the title's in-game menu (psx_game_menu.h) */
++static int          s_sdl_gm_tw;
++static int          s_sdl_gm_th;
++/* main.cpp: the in-game menu's picture while it is open (GL draws it as overlay 3). */
++extern int psx_game_menu_overlay_image(const uint32_t **px, int *w, int *h);
+ static SDL_Renderer *s_sdl_ren;
+ #endif
+ 
+@@ -547,6 +552,11 @@ void host_osd_draw_sdl(struct SDL_Renderer *renderer) {
+             sdl_blit_argb(renderer, &s_sdl_ssm_tex, &s_sdl_ssm_tw,
+                           &s_sdl_ssm_th, px, w, h, 0, 0, lw, lh);
+         }
++        if (psx_game_menu_overlay_image(&px, &w, &h) && px) {
++            int lw = 640, lh = 480;
++            sdl_logical_size(renderer, &lw, &lh);
++            sdl_blit_argb(renderer, &s_sdl_gm_tex, &s_sdl_gm_tw, &s_sdl_gm_th, px, w, h, 0, 0, lw, lh);
++        }
+     }
+     touch_pad_draw_sdl(renderer);   /* on-screen controls (Android) over everything */
+ #else
+diff --git a/runtime/src/main.cpp b/runtime/src/main.cpp
+index 2c6587c..aa9942a 100644
+--- a/runtime/src/main.cpp
++++ b/runtime/src/main.cpp
+@@ -8125,6 +8125,7 @@ static void game_menu_host_pause_loop(void) {
+         SDL_Event ev;
+         while (SDL_PollEvent(&ev)) {
+             (void)psx_local_mouse_event(ev);
++            if (touch_pad_event(&ev)) continue;   /* the menu is driven by the pad too */
+             if (ev.type == SDL_QUIT) {
+                 psx_crash_trace_set_exit_origin("sdl_window_close");
+                 shutdown_runtime();
+@@ -8421,7 +8422,8 @@ static bool drain_host_events() {
+                 netplay_soft_exit("netplay_escape");
+                 return false;
+             }
+-            if (key == SDLK_ESCAPE && !key_repeat && g_game_menu && !savestate_menu_open &&
++            /* AC_BACK: Android's back gesture, the phone's Esc. */
++            if ((key == SDLK_ESCAPE || key == SDLK_AC_BACK) && !key_repeat && g_game_menu && !savestate_menu_open &&
+                 !psx_rewind_is_open() && !game_menu_open()) {
+                 psx_local_mouse_reset();
+                 g_game_menu->open();
+-- 
+2.56.0
+

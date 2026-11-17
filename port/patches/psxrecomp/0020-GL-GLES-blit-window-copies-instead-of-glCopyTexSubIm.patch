@@ -1,0 +1,241 @@
+From ca881dbff4dfb723ea564b40509c8312028df32a Mon Sep 17 00:00:00 2001
+From: obaidr1 <147771377+obaidr1@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 16:50:19 +0100
+Subject: [PATCH 20/26] GL (GLES): blit window copies instead of
+ glCopyTexSubImage2D
+
+ANGLE, Android's default GLES driver, kept a window-sized staging image
+for every glCopyTexSubImage2D from the window surface: the hold-last
+capture ran each frame in 30 fps phases (~15 MB per frame) and the
+low-memory killer ended the app within seconds. hold_capture_drawable
+and post-AA now blit into an FBO on GLES. PSX_GL_ALLOC_TRACE also counts
+sub uploads, copies and blits with the caller line.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ runtime/src/gpu_gl_renderer.c | 149 +++++++++++++++++++++++++++++++++-
+ 1 file changed, 146 insertions(+), 3 deletions(-)
+
+diff --git a/runtime/src/gpu_gl_renderer.c b/runtime/src/gpu_gl_renderer.c
+index 2fe17ba..3661115 100644
+--- a/runtime/src/gpu_gl_renderer.c
++++ b/runtime/src/gpu_gl_renderer.c
+@@ -118,6 +118,8 @@
+  *    pass debug dumps write blank images), no glMapBuffer (the debug present
+  *    ring stays off), no GL_FRAMEBUFFER_SRGB. */
+ #define PSXGL_ES 1
++#include <EGL/egl.h>
++#include <SDL3/SDL_egl.h>
+ GLAPI void APIENTRY glClearDepthf(GLfloat depth);
+ #define glClearDepth(d) glClearDepthf((GLfloat)(d))
+ static void psx_gles_no_get_tex_image(size_t bytes, void *out) { memset(out, 0, bytes); }
+@@ -354,6 +356,103 @@ static void APIENTRY gl_bind_fb_redirect(GLenum target, GLuint fb) {
+     p_glBindFramebuffer_raw(target, fb);
+ }
+ 
++/* PSX_GL_ALLOC_TRACE=1: count GL object creation / deletion and texture /
++ * buffer bytes, one line per 2 s (finding leaks on drivers that keep memory,
++ * e.g. ANGLE). Function-like macros, so the LOAD() pointer names stay. */
++static int s_at_on = -1;
++static unsigned long long s_at_tex_bytes, s_at_buf_bytes, s_at_rb_bytes;
++static int s_at_tex_gen, s_at_tex_del, s_at_tex_img, s_at_fb_gen, s_at_fb_del, s_at_rb_gen, s_at_rb_del,
++           s_at_buf_gen, s_at_buf_del, s_at_buf_data;
++static uint64_t s_at_t0;
++static int s_at_swaps, s_at_sub, s_at_blit, s_at_blit0;
++static unsigned long long s_at_sub_bytes;
++static int s_at_sub_line, s_at_sub_w, s_at_sub_h, s_at_copy, s_at_copy_line;
++static void at_tick(void) {
++    if (s_at_on < 0) { const char *e = getenv("PSX_GL_ALLOC_TRACE"); s_at_on = e && *e && *e != '0'; }
++    if (!s_at_on) return;
++    const uint64_t now = SDL_GetTicks();
++    if (!s_at_t0) s_at_t0 = now;
++    if (now - s_at_t0 < 2000) return;
++    const uint64_t f0 = SDL_GetPerformanceCounter();
++    glFinish();                                   /* how long the GPU needs to drain: a hang shows */
++    const double finish_ms = (double)(SDL_GetPerformanceCounter() - f0) * 1000.0 / (double)SDL_GetPerformanceFrequency();
++    fprintf(stdout, "psxrecomp: GL alloc/2s tex gen %d del %d img %d (%llu MB) | fb gen %d del %d | "
++            "rb gen %d del %d (%llu MB) | buf gen %d del %d data %d (%llu MB) | sub %d (%llu MB) | blit %d to-window %d | swaps %d | big sub line %d %dx%d | copy %d line %d | finish %.1f ms err 0x%x\n",
++            s_at_tex_gen, s_at_tex_del, s_at_tex_img, s_at_tex_bytes >> 20, s_at_fb_gen, s_at_fb_del,
++            s_at_rb_gen, s_at_rb_del, s_at_rb_bytes >> 20, s_at_buf_gen, s_at_buf_del, s_at_buf_data, s_at_buf_bytes >> 20,
++            s_at_sub, s_at_sub_bytes >> 20, s_at_blit, s_at_blit0, s_at_swaps, s_at_sub_line, s_at_sub_w, s_at_sub_h, s_at_copy, s_at_copy_line, finish_ms, (unsigned)glGetError());
++    s_at_swaps = 0; s_at_sub_line = s_at_sub_w = s_at_sub_h = s_at_copy = s_at_copy_line = 0; s_at_sub = 0; s_at_sub_bytes = 0; s_at_blit = 0; s_at_blit0 = 0;
++    {
++        SDL_Window *at_win = SDL_GL_GetCurrentWindow();
++        int ww = 0, wh = 0, pw = 0, ph = 0;
++        GLint vp[4] = {0, 0, 0, 0};
++        if (at_win) { SDL_GetWindowSize(at_win, &ww, &wh); SDL_GetWindowSizeInPixels(at_win, &pw, &ph); }
++        glGetIntegerv(GL_VIEWPORT, vp);
++        int ew = -1, eh = -1;
++#if defined(PSXGL_ES)
++        {
++            EGLDisplay d = SDL_EGL_GetCurrentDisplay();
++            EGLSurface su = at_win ? SDL_EGL_GetWindowSurface(at_win) : EGL_NO_SURFACE;
++            if (d && su) { eglQuerySurface(d, su, EGL_WIDTH, &ew); eglQuerySurface(d, su, EGL_HEIGHT, &eh); }
++        }
++#endif
++        fprintf(stdout, "psxrecomp: GL sizes window %dx%d pixels %dx%d egl %dx%d viewport %dx%d\n",
++                ww, wh, pw, ph, ew, eh, vp[2], vp[3]);
++    }
++    fflush(stdout);
++    s_at_tex_gen = s_at_tex_del = s_at_tex_img = s_at_fb_gen = s_at_fb_del = s_at_rb_gen = s_at_rb_del = 0;
++    s_at_buf_gen = s_at_buf_del = s_at_buf_data = 0;
++    s_at_tex_bytes = s_at_buf_bytes = s_at_rb_bytes = 0;
++    s_at_t0 = now;
++}
++static void at_TexImage2D(GLenum t, GLint l, GLint fi, GLsizei w, GLsizei h, GLint b, GLenum f, GLenum ty, const void *px) {
++    s_at_tex_img++; s_at_tex_bytes += (unsigned long long)w * h * 4; at_tick();
++    (glTexImage2D)(t, l, fi, w, h, b, f, ty, px);
++}
++static void at_TexSubImage2D(int line, GLenum t, GLint l, GLint x, GLint y, GLsizei w, GLsizei h, GLenum f, GLenum ty, const void *px) {
++    if ((long)w * h > (long)s_at_sub_w * s_at_sub_h) { s_at_sub_line = line; s_at_sub_w = w; s_at_sub_h = h; }
++    s_at_sub++; s_at_sub_bytes += (unsigned long long)w * h * 4; at_tick();
++    (glTexSubImage2D)(t, l, x, y, w, h, f, ty, px);
++}
++static void at_CopyTexSubImage2D(int line, GLenum t, GLint l, GLint xo, GLint yo, GLint x, GLint y, GLsizei w, GLsizei h) {
++    s_at_copy++; s_at_copy_line = line; at_tick();
++    (glCopyTexSubImage2D)(t, l, xo, yo, x, y, w, h);
++}
++static void at_GenTextures(GLsizei n, GLuint *t) { s_at_tex_gen += n; at_tick(); (glGenTextures)(n, t); }
++static void at_DeleteTextures(GLsizei n, const GLuint *t) { s_at_tex_del += n; (glDeleteTextures)(n, t); }
++static void at_GenFramebuffers(GLsizei n, GLuint *f) { s_at_fb_gen += n; at_tick(); (p_glGenFramebuffers)(n, f); }
++static void at_DeleteFramebuffers(GLsizei n, const GLuint *f) { s_at_fb_del += n; (p_glDeleteFramebuffers)(n, f); }
++static void at_GenRenderbuffers(GLsizei n, GLuint *r) { s_at_rb_gen += n; at_tick(); (p_glGenRenderbuffers)(n, r); }
++static void at_DeleteRenderbuffers(GLsizei n, const GLuint *r) { s_at_rb_del += n; (p_glDeleteRenderbuffers)(n, r); }
++static void at_RenderbufferStorage(GLenum t, GLenum f, GLsizei w, GLsizei h) {
++    s_at_rb_bytes += (unsigned long long)w * h * 4; at_tick(); (p_glRenderbufferStorage)(t, f, w, h);
++}
++static void at_GenBuffers(GLsizei n, GLuint *b) { s_at_buf_gen += n; at_tick(); (p_glGenBuffers)(n, b); }
++static void at_DeleteBuffers(GLsizei n, const GLuint *b) { s_at_buf_del += n; (p_glDeleteBuffers)(n, b); }
++static void at_BufferData(GLenum t, GLsizeiptr n, const void *d, GLenum u) {
++    s_at_buf_data++; s_at_buf_bytes += (unsigned long long)n; at_tick(); (p_glBufferData)(t, n, d, u);
++}
++static void at_BlitFramebuffer(GLint a, GLint b, GLint c, GLint d, GLint e, GLint f, GLint g, GLint h, GLbitfield m, GLenum fl) {
++    GLint draw = -1;
++    if (s_at_on > 0) { glGetIntegerv(0x8CA6 /* GL_DRAW_FRAMEBUFFER_BINDING */, &draw); s_at_blit++; if (draw == 0) s_at_blit0++; }
++    at_tick();
++    (p_glBlitFramebuffer)(a, b, c, d, e, f, g, h, m, fl);
++}
++#define p_glBlitFramebuffer(...)     at_BlitFramebuffer(__VA_ARGS__)
++#define glTexImage2D(...)            at_TexImage2D(__VA_ARGS__)
++#define glTexSubImage2D(...)         at_TexSubImage2D(__LINE__, __VA_ARGS__)
++#define glCopyTexSubImage2D(...)     at_CopyTexSubImage2D(__LINE__, __VA_ARGS__)
++#define glGenTextures(...)           at_GenTextures(__VA_ARGS__)
++#define glDeleteTextures(...)        at_DeleteTextures(__VA_ARGS__)
++#define p_glGenFramebuffers(...)     at_GenFramebuffers(__VA_ARGS__)
++#define p_glDeleteFramebuffers(...)  at_DeleteFramebuffers(__VA_ARGS__)
++#define p_glGenRenderbuffers(...)    at_GenRenderbuffers(__VA_ARGS__)
++#define p_glDeleteRenderbuffers(...) at_DeleteRenderbuffers(__VA_ARGS__)
++#define p_glRenderbufferStorage(...) at_RenderbufferStorage(__VA_ARGS__)
++#define p_glGenBuffers(...)          at_GenBuffers(__VA_ARGS__)
++#define p_glDeleteBuffers(...)       at_DeleteBuffers(__VA_ARGS__)
++#define p_glBufferData(...)          at_BufferData(__VA_ARGS__)
++
+ static int load_modern_gl(void) {
+     int ok = 1;
+ #define LOAD(p, n) do { p = (void *)SDL_GL_GetProcAddress(n); if (!p) ok = 0; } while (0)
+@@ -1315,9 +1414,25 @@ static void hold_capture_drawable(void) {
+         return;
+     hold_ensure_tex(ww, wh);
+     p_glBindFramebuffer(PSXGL_READ_FRAMEBUFFER, 0);
++#if defined(PSXGL_ES)
++    {   /* ANGLE (Android's default GLES) keeps a window-sized staging image for
++         * every glCopyTexSubImage2D from the window surface: ~15 MB per frame,
++         * the app is killed within seconds. A blit into the hold FBO copies the
++         * same pixels without it. */
++        GLint draw = 0;
++        glGetIntegerv(0x8CA6 /* GL_DRAW_FRAMEBUFFER_BINDING */, &draw);
++        const GLboolean sc = glIsEnabled(GL_SCISSOR_TEST);
++        glDisable(GL_SCISSOR_TEST);
++        p_glBindFramebuffer(PSXGL_DRAW_FRAMEBUFFER, s_hold_fbo);
++        p_glBlitFramebuffer(0, 0, ww, wh, 0, 0, ww, wh, GL_COLOR_BUFFER_BIT, GL_NEAREST);
++        p_glBindFramebuffer(PSXGL_DRAW_FRAMEBUFFER, (GLuint)draw);
++        if (sc) glEnable(GL_SCISSOR_TEST);
++    }
++#else
+     glBindTexture(GL_TEXTURE_2D, s_hold_tex);
+     glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, ww, wh);
+     glBindTexture(GL_TEXTURE_2D, 0);
++#endif
+     s_hold_kind = HOLD_DRAWABLE;
+     s_hold_force_4_3 = 0;
+     s_hold_linear = 0;
+@@ -1508,7 +1623,7 @@ static const char *PRESENT_VS =
+  * (luma contrast test, edge orientation, bounded end-of-edge search,
+  * sub-pixel blend); it is one copy plus one full-screen pass. */
+ static GLuint build_program(const char *vs, const char *fs);
+-static GLuint s_paa_prog = 0, s_paa_tex = 0;
++static GLuint s_paa_prog = 0, s_paa_tex = 0, s_paa_fbo = 0;
+ static int    s_paa_tw = 0, s_paa_th = 0, s_paa_failed = 0;
+ static GLint  s_paa_uTex = -1, s_paa_uRcp = -1, s_paa_uUvRect = -1, s_paa_uQuality = -1;
+ static uint64_t s_paa_passes = 0;
+@@ -1594,7 +1709,7 @@ uint64_t gl_renderer_post_aa_passes(void) {
+ }
+ 
+ static void post_aa_release(void) {
+-    s_paa_prog = 0; s_paa_tex = 0; s_paa_tw = s_paa_th = 0; s_paa_failed = 0;
++    s_paa_prog = 0; s_paa_tex = 0; s_paa_fbo = 0; s_paa_tw = s_paa_th = 0; s_paa_failed = 0;
+ }
+ 
+ /* The composed image in [lx,ly,lw,lh] of the bound window target, in place. */
+@@ -1624,6 +1739,12 @@ static void post_aa_apply(int lx, int ly, int lw, int lh) {
+         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
++#if defined(PSXGL_ES)
++        if (!s_paa_fbo) p_glGenFramebuffers(1, &s_paa_fbo);
++        p_glBindFramebuffer(PSXGL_DRAW_FRAMEBUFFER, s_paa_fbo);
++        p_glFramebufferTexture2D(PSXGL_DRAW_FRAMEBUFFER, PSXGL_COLOR_ATTACHMENT0,
++                                 GL_TEXTURE_2D, s_paa_tex, 0);
++#endif
+         s_paa_tw = lw; s_paa_th = lh;
+     } else {
+         glBindTexture(GL_TEXTURE_2D, s_paa_tex);
+@@ -1642,7 +1763,14 @@ static void post_aa_apply(int lx, int ly, int lw, int lh) {
+ #endif
+     for (int r = 0; r < reps; r++) {
+     p_glBindFramebuffer(PSXGL_READ_FRAMEBUFFER, 0);
++#if defined(PSXGL_ES)
++    /* a blit, not glCopyTexSubImage2D: see hold_capture_drawable (ANGLE) */
++    p_glBindFramebuffer(PSXGL_DRAW_FRAMEBUFFER, s_paa_fbo);
++    glDisable(GL_SCISSOR_TEST);
++    p_glBlitFramebuffer(lx, ly, lx + lw, ly + lh, 0, 0, lw, lh, GL_COLOR_BUFFER_BIT, GL_NEAREST);
++#else
+     glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, lx, ly, lw, lh);
++#endif
+     p_glBindFramebuffer(PSXGL_FRAMEBUFFER, 0);
+     glViewport(lx, ly, lw, lh);
+     p_glUseProgram(s_paa_prog);
+@@ -6456,6 +6584,8 @@ int gl_renderer_init_context(SDL_Window *win) {
+      * the whole GL renderer is unavailable and the runtime stays on the pure
+      * software path — no half-GL hybrid (that mixed mode is what produced
+      * the alternating-present menu jitter). */
++    if (getenv("PSX_GL_INTERP_SUSPEND") && getenv("PSX_GL_INTERP_SUSPEND")[0] == '1')
++        s_interp_suspended = 1;                   /* debug: as after a pause menu */
+     int ok = load_modern_gl();
+     if (ok) {
+         glGenTextures(1, &s_present_tex);
+@@ -9468,7 +9598,20 @@ static int pt_cb_ctx(void *user, int current) {
+ 
+ /* The one owned swap call: the composing thread's (direct) or the present
+  * thread's. */
+-static void gl_window_swap(void) { SDL_GL_SwapWindow(s_win); }
++static void gl_window_swap(void) {
++    s_at_swaps++;
++    {   /* debug: PSX_GL_FORCE_SWAP1=1 keeps the driver's vsync on */
++        static int forced = -1;
++        if (forced < 0) { const char *e = getenv("PSX_GL_FORCE_SWAP1"); forced = e && e[0] == '1'; }
++        if (forced) SDL_GL_SetSwapInterval(1);
++    }
++    if (!SDL_GL_SwapWindow(s_win)) {               /* log the first failures (EGL surface lost etc.) */
++        static int s_swap_fail;
++        if (s_swap_fail++ < 5)
++            fprintf(stdout, "psxrecomp: GL swap failed: %s (window %p, current %p)\n", SDL_GetError(),
++                    (void *)s_win, (void *)SDL_GL_GetCurrentWindow());
++    }
++}
+ 
+ static void *pt_cb_present(void *user, int slot, void *ready) {
+     (void)user;
+-- 
+2.56.0
+
