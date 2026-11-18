@@ -1062,17 +1062,18 @@ struct App {
         if (!line.empty()) lines.push_back(line);
         return lines;
     }
-    float text_block(const std::string& s, float x, float y, const char* color = "yellow", int max_w = 280) {
-        const auto lines = wrap(s, max_w);
+    float text_block(const std::string& s, float x, float y, const char* color = "yellow", int max_w = 280,
+                     float scale = 1.0f) {
+        const auto lines = wrap(s, int(max_w / scale));
         // 15 px per line; a line with accented capitals (É Ü Ñ ...: any
         // non-ASCII byte) gets 3 px more so its marks stay clear of the line above
         float dy = 0;
         for (size_t i = 0; i < lines.size(); ++i) {
-            if (i) dy += 15 + (std::any_of(lines[i].begin(), lines[i].end(),
-                                           [](char ch) { return (unsigned char)ch >= 0x80; }) ? 3 : 0);
-            text(lines[i], x, y + dy, color, "center");
+            if (i) dy += scale * (15 + (std::any_of(lines[i].begin(), lines[i].end(),
+                                                    [](char ch) { return (unsigned char)ch >= 0x80; }) ? 3 : 0));
+            text(lines[i], x, y + dy, color, "center", scale);
         }
-        return dy + 15.0f + (art.font.height * art.font.scale - 15);
+        return dy + scale * (15.0f + (art.font.height * art.font.scale - 15));
     }
     // the game's German caption sprite, or the same words in the font
     void caption(const char* sprite, const std::string& key, float y, const char* color = "yellow") {
@@ -1510,6 +1511,8 @@ void OptionsScreen::render(App& a) {
         a.hit(14, y + 4, 292, 18, [this, i] { row = int(i) + 1; }, [this, &a, i] { row = int(i) + 1; step(a, 1); });
 #endif
     }
+    for (const auto& r : rows)                    // why game data is sent, below its row
+        if (r.key == "share_events") { a.text_block(a.T("opt.share_note"), W / 2.0f, 54 + rows.size() * 20 + 8, "orange", 290, 0.6f); break; }
     a.caption("back_help", "help_back", 234);
 }
 void OptionsScreen::step(App& a, int d) {
@@ -1960,7 +1963,11 @@ std::vector<ScriptStep> parse_script() {
 
 void App::run() {
     t0 = SDL_GetTicks();
-    screen = ctx.store.get("share_events") == "ask" ? static_cast<Screen*>(&g_consent) : &g_main;
+    // Game data is sent unless the player switched it off (Options > General,
+    // with a note why); "ask" (never answered, or a fresh install) means on.
+    // A "no" given in 0.5.7's question stays no.
+    if (ctx.store.get("share_events") == "ask") set("share_events", "yes");
+    screen = &g_main;
     events_start();
     auto script = parse_script();
     size_t next_step = 0;

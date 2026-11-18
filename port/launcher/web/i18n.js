@@ -47,7 +47,7 @@ const STR = {
       touch: "TOUCH", general: "ALLGEMEIN", pause: "PAUSE", keys: "TASTEN", hotkeys: "KÜRZEL", video: "BILD", gfx: "GRAFIK", filter: "FILTER", sound: "TON",
     },
     opt: {
-      language: "SPRACHE", volume: "LAUTSTÄRKE", fast_cd: "SCHNELL LADEN", updates: "AUTO-UPDATES", share_events: "SPIELDATEN SENDEN", frame_blend: "BILDGLÄTTUNG",
+      language: "SPRACHE", volume: "LAUTSTÄRKE", fast_cd: "SCHNELL LADEN", updates: "AUTO-UPDATES", share_events: "SPIELDATEN SENDEN", share_note: "WIR ERHEBEN ANONYME SPIELDATEN (OHNE IP-ADRESSE), UM DAS SPIELERLEBNIS ZU VERBESSERN UND FEHLER AUTOMATISCH ZU ERKENNEN. HIER ABSCHALTBAR.", frame_blend: "BILDGLÄTTUNG",
       hd_build: "HD-GRAFIKEN",
       internal_resolution: "AUFLÖSUNG", aspect_ratio: "FORMAT", fullscreen: "ANZEIGE", vsync: "BILDSYNC",
       preset: "STIL", hd_sprites: "HD FIGUREN", hd_levels: "HD LANDSCHAFT", hd_hud: "HD ANZEIGEN",
@@ -98,7 +98,7 @@ const STR = {
     },
     pages: { touch: "TOUCH", general: "GENERAL", pause: "PAUSE", keys: "CONTROLS", hotkeys: "SHORTCUTS", video: "DISPLAY", gfx: "GRAPHICS", filter: "FILTERS", sound: "SOUND" },
     opt: {
-      language: "LANGUAGE", volume: "VOLUME", fast_cd: "FAST LOADING", updates: "AUTO UPDATES", share_events: "SEND GAME DATA", frame_blend: "FRAME BLEND",
+      language: "LANGUAGE", volume: "VOLUME", fast_cd: "FAST LOADING", updates: "AUTO UPDATES", share_events: "SEND GAME DATA", share_note: "WE COLLECT ANONYMOUS GAME DATA (NO IP ADDRESS) TO IMPROVE THE GAME AND DETECT ERRORS AUTOMATICALLY. YOU CAN SWITCH IT OFF HERE.", frame_blend: "FRAME BLEND",
       hd_build: "HD GRAPHICS",
       internal_resolution: "RESOLUTION", aspect_ratio: "ASPECT", fullscreen: "MODE", vsync: "VSYNC",
       preset: "STYLE", hd_sprites: "HD CHARACTERS", hd_levels: "HD SCENERY", hd_hud: "HD DISPLAY",
@@ -149,7 +149,7 @@ const STR = {
     },
     pages: { touch: "TACTILE", general: "GÉNÉRAL", pause: "PAUSE", keys: "TOUCHES", hotkeys: "RACCOURCIS", video: "AFFICHAGE", gfx: "GRAPHISMES", filter: "FILTRES", sound: "SON" },
     opt: {
-      language: "LANGUE", volume: "VOLUME", fast_cd: "CHARGEMENT RAPIDE", updates: "MISES À JOUR", share_events: "ENVOYER LES DONNÉES", frame_blend: "FONDU D'IMAGES",
+      language: "LANGUE", volume: "VOLUME", fast_cd: "CHARGEMENT RAPIDE", updates: "MISES À JOUR", share_events: "ENVOYER LES DONNÉES", share_note: "NOUS COLLECTONS DES DONNÉES DE JEU ANONYMES (SANS ADRESSE IP) POUR AMÉLIORER LE JEU ET DÉTECTER LES ERREURS AUTOMATIQUEMENT. DÉSACTIVABLE ICI.", frame_blend: "FONDU D'IMAGES",
       hd_build: "GRAPHISMES HD",
       internal_resolution: "RÉSOLUTION", aspect_ratio: "FORMAT", fullscreen: "MODE", vsync: "SYNCHRO",
       preset: "STYLE", hd_sprites: "PERSONNAGES HD", hd_levels: "DÉCORS HD", hd_hud: "INTERFACE HD",
@@ -200,7 +200,7 @@ const STR = {
     },
     pages: { touch: "TÁCTIL", general: "GENERAL", pause: "PAUSA", keys: "CONTROLES", hotkeys: "ATAJOS", video: "PANTALLA", gfx: "GRÁFICOS", filter: "FILTROS", sound: "SONIDO" },
     opt: {
-      language: "IDIOMA", volume: "VOLUMEN", fast_cd: "CARGA RÁPIDA", updates: "ACTUALIZACIONES", share_events: "ENVIAR DATOS", frame_blend: "FUSIÓN DE IMÁGENES",
+      language: "IDIOMA", volume: "VOLUMEN", fast_cd: "CARGA RÁPIDA", updates: "ACTUALIZACIONES", share_events: "ENVIAR DATOS", share_note: "RECOGEMOS DATOS DE JUEGO ANÓNIMOS (SIN DIRECCIÓN IP) PARA MEJORAR EL JUEGO Y DETECTAR ERRORES AUTOMÁTICAMENTE. PUEDES DESACTIVARLO AQUÍ.", frame_blend: "FUSIÓN DE IMÁGENES",
       hd_build: "GRÁFICOS HD",
       internal_resolution: "RESOLUCIÓN", aspect_ratio: "FORMATO", fullscreen: "MODO", vsync: "SINCRONÍA",
       preset: "ESTILO", hd_sprites: "PERSONAJES HD", hd_levels: "ESCENARIOS HD", hd_hud: "MARCADORES HD",
@@ -251,7 +251,7 @@ const STR = {
     },
     pages: { touch: "TOUCH", general: "GENERALE", pause: "PAUSA", keys: "COMANDI", hotkeys: "SCORCIATOIE", video: "SCHERMO", gfx: "GRAFICA", filter: "FILTRI", sound: "AUDIO" },
     opt: {
-      language: "LINGUA", volume: "VOLUME", fast_cd: "CARICAMENTO RAPIDO", updates: "AGGIORNAMENTI", share_events: "INVIA DATI DI GIOCO", frame_blend: "FUSIONE IMMAGINI",
+      language: "LINGUA", volume: "VOLUME", fast_cd: "CARICAMENTO RAPIDO", updates: "AGGIORNAMENTI", share_events: "INVIA DATI DI GIOCO", share_note: "RACCOGLIAMO DATI DI GIOCO ANONIMI (SENZA INDIRIZZO IP) PER MIGLIORARE IL GIOCO E RILEVARE AUTOMATICAMENTE GLI ERRORI. PUOI DISATTIVARLO QUI.", frame_blend: "FUSIONE IMMAGINI",
       hd_build: "GRAFICA HD",
       internal_resolution: "RISOLUZIONE", aspect_ratio: "FORMATO", fullscreen: "MODALITÀ", vsync: "VSYNC",
       preset: "STILE", hd_sprites: "PERSONAGGI HD", hd_levels: "SCENARI HD", hd_hud: "INDICATORI HD",
