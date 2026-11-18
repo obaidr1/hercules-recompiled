@@ -25,12 +25,16 @@
  * first step to 0x29. Level 0 is not in that table (new level 0 goes back to
  * the title); the launcher starts it as level 1 with hercules.level-select.
  *
- * Feature launcher-return leaves for the launcher when the game reaches its
- * title menu (step 0x28) after a level has run: after a game over (traced:
- * 0x8E game over movie, 0xC9 game over screen, 0xE6 "LADEN", 0x28 menu) or
- * the ending. Continuing after a game over goes back to the level, not the
- * menu. A cold boot without direct-start reaches the menu before any level
- * and stays there.
+ * Feature launcher-return leaves for the launcher after a level has run:
+ * after a game over right when its movie ends (traced: 0x8C-0x96 game over
+ * movie, 0xC8/0xC9 game over screen, 0xE6 "LADEN", 0x28 menu), unless
+ * continues are left (D_80035058; the screen offers them), else when the
+ * title menu (step 0x28) comes, e.g. after the ending. A cold boot without
+ * direct-start reaches the menu before any level and stays there.
+ *
+ * A new game from the title menu sets the lives to 3 (TITLE func_800409B8);
+ * the direct start skips that screen, so it does the same -- otherwise the
+ * level start (ENGINE1 func_80058850) makes 0 lives into 1.
  *
  * Feature skip-fmv switches on the runtime's automatic FMV skip (MDEC decode
  * with an XA stream running = a movie; it holds START, which ends Hercules'
@@ -50,7 +54,12 @@
 #define STEP_LOADING  0xE6u
 #define STEP_NEW_GAME 0x29u
 #define STEP_MENU     0x28u
+#define STEP_GAMEOVER_A 0xC8u
+#define STEP_GAMEOVER_B 0xC9u
 #define LEVEL         HERC_LEVEL
+#define LIVES         HERC_LIVES
+#define CONTINUES     HERC_CONTINUES
+#define NEW_GAME_LIVES 3
 
 #include <stdlib.h>
 
@@ -64,7 +73,9 @@ static void on_vblank(void) {
     if (psx_mod_read_word(TITLE_SITE) != TITLE_WORD) { s_level_ran = 1; return; }
     if (psx_mod_read_word(TASK0_HANDLER) != INTRO_HANDLER) return;
     const uint32_t step = psx_mod_read_word(TASK0_STEP);
-    if (s_launcher_return && s_level_ran && step == STEP_MENU) {
+    const int game_over = (step == STEP_GAMEOVER_A || step == STEP_GAMEOVER_B) &&
+                          (psx_mod_read_word(CONTINUES & ~3u) >> (8u * (CONTINUES & 3u)) & 0xFFu) == 0;
+    if (s_launcher_return && s_level_ran && (step == STEP_MENU || game_over)) {
         s_level_ran = 0;
         if (psx_mod_request_return_to_launcher())
             psx_mod_counter_add("hercules.launcher-return", 1);
@@ -75,6 +86,7 @@ static void on_vblank(void) {
      * are wanted (skip-intro off) -- step 0xE7 comes right after them */
     if (s_direct_level && step == (s_skip_intro ? STEP_NOTICE : STEP_MEMCARD)) {
         psx_mod_write_byte(LEVEL, (uint8_t)(s_direct_level - 1));
+        psx_mod_write_byte(LIVES, NEW_GAME_LIVES);
         next = STEP_NEW_GAME;
     } else if (s_skip_intro && step == STEP_NOTICE)
         next = s_skip_memcard ? STEP_LOADING : STEP_MEMCARD;

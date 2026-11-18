@@ -1768,6 +1768,7 @@ bool App::hd_busy() const { return android_hd_call("hdRunning"); }
 
 void App::hd_start() {
     if (hd_busy()) return;
+    if (ctx.exe.empty()) { hd_gave_up = true; return; }   // a release this APK does not hold
     android_hd_allow_mobile(ctx.store.b("hd_mobile"));
     if (!android_hd_start(kHdApi, ctx.id, pack_base(ctx).u8string(), hd_data(ctx).u8string())) { hd_gave_up = true; return; }
     hd_polled = 0;
