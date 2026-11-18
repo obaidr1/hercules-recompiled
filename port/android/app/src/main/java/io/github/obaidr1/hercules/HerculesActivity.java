@@ -61,6 +61,21 @@ public class HerculesActivity extends SDLActivity {
         }
     }
 
+    /* Called from native code (the launcher's HD option): the ready HD pack,
+     * see HdDownload. */
+    public static boolean hdStart(String api, String serial, String pack, String data) {
+        return HdDownload.start(api, serial, pack, data);
+    }
+
+    public static boolean hdRunning() {
+        return HdDownload.running();
+    }
+
+    public static boolean hdStop() {
+        HdDownload.stop();
+        return true;
+    }
+
     /* Called from native code ("back to the launcher" in the in-game menu):
      * the launcher and the game share this process, so start the app anew --
      * it opens on the launcher -- and end this process. */

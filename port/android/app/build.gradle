@@ -55,3 +55,8 @@ android {
         abortOnError = false
     }
 }
+
+dependencies {
+    // .tar.xz of the HD pack (HdDownload.java); XZ for Java, public domain / 0BSD
+    implementation 'org.tukaani:xz:1.10'
+}

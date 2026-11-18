@@ -365,6 +365,46 @@ HdStatus hd_read(const Ctx& c) {
     return st;
 }
 
+#if defined(__ANDROID__)
+// HerculesActivity.hdStart/hdRunning/hdStop -> HdDownload.java (the ready
+// pack from the hd-packs release; hd_auto.py's download part without Python).
+constexpr const char* kHdApi = "https://api.github.com/repos/obaidr1/hercules-recompiled/releases/tags/hd-packs";
+
+bool android_hd_call(const char* name) {           // hdRunning / hdStop: ()Z
+    JNIEnv* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
+    jobject act = static_cast<jobject>(SDL_GetAndroidActivity());
+    if (!env || !act) return false;
+    jclass cls = env->GetObjectClass(act);
+    jmethodID m = cls ? env->GetStaticMethodID(cls, name, "()Z") : nullptr;
+    const bool r = m && env->CallStaticBooleanMethod(cls, m);
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    env->DeleteLocalRef(act);
+    if (cls) env->DeleteLocalRef(cls);
+    return r;
+}
+
+bool android_hd_start(const char* api, const std::string& serial, const std::string& pack, const std::string& data) {
+    JNIEnv* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
+    jobject act = static_cast<jobject>(SDL_GetAndroidActivity());
+    if (!env || !act) return false;
+    bool ok = false;
+    jclass cls = env->GetObjectClass(act);
+    jmethodID m = cls ? env->GetStaticMethodID(cls, "hdStart",
+                                               "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Z")
+                      : nullptr;
+    if (m) {
+        jstring a = env->NewStringUTF(api), s = env->NewStringUTF(serial.c_str()), p = env->NewStringUTF(pack.c_str()),
+                d = env->NewStringUTF(data.c_str());
+        ok = env->CallStaticBooleanMethod(cls, m, a, s, p, d);
+        for (jstring x : {a, s, p, d}) env->DeleteLocalRef(x);
+    }
+    if (env->ExceptionCheck()) { env->ExceptionClear(); ok = false; }
+    env->DeleteLocalRef(act);
+    if (cls) env->DeleteLocalRef(cls);
+    return ok;
+}
+#endif
+
 // --------------------------------------------------------------- updates
 // update/updater.py (in the shipped Python) asks GitHub for the latest
 // release, downloads and checks it, and swaps the program files after the
@@ -876,6 +916,7 @@ struct App {
     SDL_Process* hd_proc = nullptr;
     HdStatus hd;
     uint64_t hd_polled = 0;
+    bool hd_android_was_running = false;   // Android: the download thread was seen running
     bool hd_gave_up = false;            // failed or impossible this session; the next start retries
     SDL_Process* upd_proc = nullptr;    // updater check / download
     std::string upd_op, upd_latest, upd_notes, upd_state;   // state: "", ok, download, unpack, ready, failed
@@ -1073,12 +1114,14 @@ struct App {
 
     // ---------------------------------------------------------- HD build
 #if defined(__ANDROID__)
-    bool hd_wanted() const { return false; }   // no HD on Android yet (software renderer, Python download)
+    // a 1.6 GB download: only when the player asked for it in the options
+    bool hd_wanted() const { return ctx.store.get("hd_auto") == "true"; }
 #else
     bool hd_wanted() const { return ctx.store.get("hd_auto") != "false"; }
 #endif
     void hd_start();
     void hd_stop();
+    bool hd_busy() const;
     void hd_tick();
     std::string hd_label();
     void hd_toggle();
@@ -1231,7 +1274,7 @@ void MainMenu::render(App& a) {
         if (a.disc_art() && it != a.art.level_name.end()) a.centered(it->second, 6);
         else a.text_block(a.level_name(lv), W / 2.0f, -5, "yellow", 300);
     }
-    if (!a.hd_proc && a.upd_newer) a.upd_line(225);
+    if (!a.hd_busy() && a.upd_newer) a.upd_line(225);
     else a.hd_line(225);
 }
 void MainMenu::key(App& a, Key k) {
@@ -1359,7 +1402,7 @@ std::vector<Row> touch_rows() {
 std::vector<std::pair<std::string, std::vector<Row>>> pages() {
     auto ps = all_pages();
 #if defined(__ANDROID__)
-    static const std::set<std::string> hidden = {"hd_build", "hd_sprites", "hd_levels", "hd_hud", "updates"};
+    static const std::set<std::string> hidden = {"updates"};   // updates: from the APK release page
     for (auto& [name, rows] : ps)
         rows.erase(std::remove_if(rows.begin(), rows.end(), [](const Row& r) { return hidden.count(r.key) > 0; }),
                    rows.end());
@@ -1679,6 +1722,50 @@ bool App::ask_disc() {
 }
 
 // ------------------------------------------------------------ HD build
+#if defined(__ANDROID__)
+// Android: no Python. HdDownload.java (via HerculesActivity) fetches the ready
+// pack of this release from the "hd-packs" GitHub release on its own thread
+// and writes the same progress.json as hd_auto.py.
+bool App::hd_busy() const { return android_hd_call("hdRunning"); }
+
+void App::hd_start() {
+    if (hd_busy()) return;
+    if (!android_hd_start(kHdApi, ctx.id, pack_base(ctx).u8string(), hd_data(ctx).u8string())) { hd_gave_up = true; return; }
+    toast(T("touch.hd_start"));
+    hd_polled = 0;
+}
+
+void App::hd_stop() {
+    android_hd_call("hdStop");
+    hd = hd_read(ctx);
+}
+
+void App::hd_tick() {
+    const uint64_t now = SDL_GetTicks();
+    if (hd_polled && now - hd_polled < 1000) return;
+    hd_polled = now;
+    if (hd_android_was_running) {
+        hd = hd_read(ctx);
+        if (hd_busy()) return;
+        hd_android_was_running = false;
+        if (hd.state == "done" && hd_pack_ready(ctx)) {
+            show_message(T("hd_done"));
+        } else {
+            hd_gave_up = true;
+            if (hd.state == "failed")
+                show_message(T(hd.error == "disk" ? "touch.hd_err_disk"
+                               : hd.error == "network" ? "hd_err_network" : "hd_err_failed"));
+        }
+        return;
+    }
+    if (!hd_gave_up && hd_wanted() && ctx.store.b("hd_started") && !hd_pack_ready(ctx)) {
+        hd_start();
+        hd_android_was_running = hd_busy();
+    }
+}
+#else
+bool App::hd_busy() const { return hd_proc != nullptr; }
+
 void App::hd_start() {
     const fs::path py = hd_python(ctx), script = ctx.exe_dir / "hd" / "hd_auto.py";
     if (hd_proc || ctx.disc.empty() || !fs::exists(py) || !fs::exists(script)) { hd_gave_up = true; return; }
@@ -1735,28 +1822,34 @@ void App::hd_tick() {
     }
     if (!hd_gave_up && hd_wanted() && ctx.store.b("hd_started") && !hd_pack_ready(ctx)) hd_start();
 }
+#endif
 
 std::string App::hd_label() {
     const std::string p = std::to_string(int(hd.fraction * 100));
-    if (hd_pack_ready(ctx) && !hd_proc) return T("val.hd_ready");
-    if (hd_proc) return p + " %";
+    if (hd_pack_ready(ctx) && !hd_busy()) return T("val.hd_ready");
+    if (hd_busy()) return p + " %";
+#if !defined(__ANDROID__)
     if (!fs::exists(ctx.exe_dir / "hd" / "hd_auto.py")) return T("val.hd_unavailable");
+#endif
     if (!hd.state.empty()) return T("val.hd_paused", {{"p", p}});
     return T("val.hd_make");
 }
 
 void App::hd_toggle() {
-    if (hd_proc) { hd_stop(); set("hd_auto", "false"); return; }
+    if (hd_busy()) { hd_stop(); set("hd_auto", "false"); return; }
     if (hd_pack_ready(ctx)) return;
     set("hd_auto", "true");
     set("hd_started", "true");
     hd_gave_up = false;
     hd_start();
+#if defined(__ANDROID__)
+    hd_android_was_running = hd_busy();
+#endif
 }
 
 // bottom of the main menu while the pack is being made
 void App::hd_line(float y) {
-    if (!hd_proc) return;
+    if (!hd_busy()) return;
     const int p = int(hd.fraction * 100);
     std::string msg;
     if (hd.phase == "build" && hd.eta >= 0) {
