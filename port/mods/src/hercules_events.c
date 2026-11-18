@@ -22,6 +22,7 @@
  */
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 #include <time.h>
 #include "mod_plugins.h"
 #include "hercules_addrs.h" /* per PAL version, hercules/tools/port_version.py */
@@ -107,7 +108,9 @@ static void state_fields(const State* s, char* f, size_t cap) {
              (unsigned)s->demo, s->engine, s->step);
 }
 
+static void input_trace(void);
 static void on_vblank(void) {
+    input_trace();
     if (!s_on) return;
     ++s_vblank;
     State n;
@@ -154,6 +157,45 @@ static void on_vblank(void) {
     if (n.deaths != p->deaths) emitf(&n, "deaths", "\"n\":%d,\"from\":%d", n.deaths, p->deaths, 0);
     if (n.continues != p->continues) emitf(&n, "continues", "\"n\":%d,\"from\":%d", n.continues, p->continues, 0);
     s_prev = n;
+}
+
+/* HERC_INPUT_TRACE=1 (tests only): when the game's own pad words change
+ * (ENGINE1 func_80038B58 fills D_800350A4..D_800350AE from the pad) and when
+ * the hero (object at *D_80074A00, x +2, y +6) first moves after that, one
+ * stdout line each with CLOCK_MONOTONIC -- the clock of the runtime's
+ * PSX_INPUT_TRACE lines and of SurfaceFlinger's frame times. */
+static int s_it = -1;
+static uint32_t s_it_pad[3], s_it_vb, s_it_press_vb;
+static int s_it_hx, s_it_hy, s_it_wait;
+
+static void input_trace(void) {
+    if (s_it < 0) { const char* e = getenv("HERC_INPUT_TRACE"); s_it = e && *e == '1'; }
+    if (!s_it) return;
+    ++s_it_vb;
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    const unsigned long long ns = (unsigned long long)t.tv_sec * 1000000000ull + (unsigned long long)t.tv_nsec;
+    const uint32_t pad[3] = {psx_mod_read_word(0x800350A4u), psx_mod_read_word(0x800350A8u), psx_mod_read_word(0x800350ACu)};
+    const uint32_t hero = psx_mod_read_word(0x80074A00u);
+    int hx = 0, hy = 0;
+    if ((hero & 0xFF000000u) == 0x80000000u) {
+        hx = rd_s16(hero + 2u);
+        hy = rd_s16(hero + 6u);
+    }
+    if (pad[0] != s_it_pad[0] || pad[1] != s_it_pad[1] || pad[2] != s_it_pad[2]) {
+        const int newly = (pad[0] & 0xFFFFu) && !(s_it_pad[0] & 0xFFFFu);
+        fprintf(stdout, "herc-trace pad %08x %08x %08x vb=%u t=%llu\n", pad[0], pad[1], pad[2], s_it_vb, ns);
+        if (newly) { s_it_press_vb = s_it_vb; s_it_wait = 1; s_it_hx = hx; s_it_hy = hy; }
+        memcpy(s_it_pad, pad, sizeof pad);
+    }
+    if (s_it_wait && (hx != s_it_hx || hy != s_it_hy)) {
+        fprintf(stdout, "herc-trace hero moves %d,%d -> %d,%d after %u vb t=%llu\n", s_it_hx, s_it_hy, hx, hy,
+                s_it_vb - s_it_press_vb, ns);
+        s_it_wait = 0;
+    } else if (s_it_wait && s_it_vb - s_it_press_vb > 60) {
+        s_it_wait = 0;
+    }
+    fflush(stdout);
 }
 
 static void on_activate(void) { s_on = 1; }
