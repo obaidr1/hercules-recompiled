@@ -1,0 +1,46 @@
+From a19dc51c15af9c810dfd6743700c2d2d153648ae Mon Sep 17 00:00:00 2001
+From: obaidr1 <147771377+obaidr1@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 22:51:30 +0100
+Subject: [PATCH 28/30] Game menu API: psx_host_save_state /
+ psx_host_load_state
+
+A game's own menu can save and load a slot (no F-keys on a phone), through
+the same path as the slot keys.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ runtime/include/psx_game_menu.h | 2 ++
+ runtime/src/main.cpp            | 4 ++++
+ 2 files changed, 6 insertions(+)
+
+diff --git a/runtime/include/psx_game_menu.h b/runtime/include/psx_game_menu.h
+index c5b4d31..c306a52 100644
+--- a/runtime/include/psx_game_menu.h
++++ b/runtime/include/psx_game_menu.h
+@@ -42,6 +42,8 @@ void     psx_host_window_size(int *w, int *h);         /* drawable pixels */
+ uint32_t psx_host_p1_buttons(void);                     /* SDL gamepad button mask, P1 */
+ void     psx_host_osd(const char *message, int ms);
+ void     psx_host_quit(void);                            /* leave the game */
++int      psx_host_save_state(int slot);                  /* 0..11, staged; 1 = ok */
++int      psx_host_load_state(int slot);
+ 
+ void psx_host_set_scanlines(int on, float strength);
+ void psx_host_set_crt(int on, float mask, float bloom);
+diff --git a/runtime/src/main.cpp b/runtime/src/main.cpp
+index 0280740..9f6c650 100644
+--- a/runtime/src/main.cpp
++++ b/runtime/src/main.cpp
+@@ -8256,6 +8256,10 @@ extern "C" uint32_t psx_host_p1_buttons(void) {
+     return m;
+ }
+ extern "C" void psx_host_osd(const char* message, int ms) { host_osd_push(message, ms); }
++/* A save state from a game's own menu (no F-keys on a phone): the same path
++ * as the slot keys, staged for the next safe point. 1 = staged. */
++extern "C" int psx_host_save_state(int slot) { return savestate_submit_slot(slot, 1); }
++extern "C" int psx_host_load_state(int slot) { return savestate_submit_slot(slot, 0); }
+ extern "C" void psx_host_quit(void) {
+     psx_crash_trace_set_exit_origin("game_menu_quit");
+     shutdown_runtime();
+-- 
+2.56.0
+

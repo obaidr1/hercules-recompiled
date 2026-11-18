@@ -1,0 +1,220 @@
+From 6d82f15b6f7b25661202672f38d2310b280dddd9 Mon Sep 17 00:00:00 2001
+From: obaidr1 <147771377+obaidr1@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 23:22:43 +0100
+Subject: [PATCH 29/30] Touch pad: buttons straight into P1's pad sample, 50 ms
+ minimum press; PSX_INPUT_TRACE
+
+Measured on a Pixel: taps shorter than ~40 ms were lost (down and up between
+two pad reads; 2 of 8 arrived), now 16 of 16. PSX_INPUT_TRACE=1 logs per
+touch press the SDL queue age, the SIO sample and the swap ends after it on
+CLOCK_MONOTONIC.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ runtime/include/latency_ring.h |  7 ++++
+ runtime/include/touch_pad.h    |  4 +++
+ runtime/src/latency_ring.c     | 65 ++++++++++++++++++++++++++++++++++
+ runtime/src/main.cpp           |  8 ++++-
+ runtime/src/touch_pad.c        | 30 ++++++++++++++++
+ 5 files changed, 113 insertions(+), 1 deletion(-)
+
+diff --git a/runtime/include/latency_ring.h b/runtime/include/latency_ring.h
+index 4b593d8..9141c5d 100644
+--- a/runtime/include/latency_ring.h
++++ b/runtime/include/latency_ring.h
+@@ -61,6 +61,13 @@ int latency_ring_summary_json(char *buf, int buf_size, int window);
+  * microseconds relative to the oldest reported frame). */
+ int latency_ring_dump_json(char *buf, int buf_size, int max_frames);
+ 
++/* Input trace (PSX_INPUT_TRACE=1, release builds too): a touch press handled
++ * (with how long SDL had queued it), each SIO pad sample (P1 buttons,
++ * active-low), and the swap ends after it; one stdout line per press. */
++void input_trace_touch(uint64_t queued_age_ns);
++void input_trace_sampled(uint16_t sio_buttons);
++void input_trace_swap_end(void);
++
+ #ifdef __cplusplus
+ }
+ #endif
+diff --git a/runtime/include/touch_pad.h b/runtime/include/touch_pad.h
+index d498f11..c76458d 100644
+--- a/runtime/include/touch_pad.h
++++ b/runtime/include/touch_pad.h
+@@ -40,6 +40,10 @@ void psx_android_haptic(int kind);
+  * PSX_TOUCH_ALPHA and PSX_TOUCH_POS (low|mid). */
+ void touch_pad_configure(int show, int size_pct, int alpha_pct, int mid);
+ 
++/* The touch buttons as PSX pad bits (active-high: bit 14 cross, 4 up ...)
++ * for Player 1's pad sample, each at least 50 ms long; 0 when hidden. */
++unsigned short touch_pad_psx_buttons(void);
++
+ #ifdef __cplusplus
+ }
+ #endif
+diff --git a/runtime/src/latency_ring.c b/runtime/src/latency_ring.c
+index 3a37457..0b6f125 100644
+--- a/runtime/src/latency_ring.c
++++ b/runtime/src/latency_ring.c
+@@ -5,6 +5,7 @@
+ #include <string.h>
+ #include <stdio.h>
+ #include <stdlib.h>
++#include <time.h>
+ 
+ #define LAT_RING_SIZE 4096   /* power of two; ~68s at 60Hz */
+ 
+@@ -38,6 +39,70 @@ void latency_ring_mark(LatencyStage stage) {
+     if (s_head == 0) return;                     /* no frame begun yet */
+     LatSlot *s = &s_ring[(s_head - 1) % LAT_RING_SIZE];
+     s->ts[stage] = qpc();
++    if (stage == LAT_SWAP_END) input_trace_swap_end();
++}
++
++/* ---- input trace (PSX_INPUT_TRACE=1): one line per touch press ------------
++ * Stamps with CLOCK_MONOTONIC (the clock of Android's SurfaceFlinger
++ * "--latency" columns, so the swaps can be matched to the frames' real
++ * display time): the touch event as SDL queued it, when the runtime handled
++ * it, the first pad sample into SIO that carries the press, and the next
++ * eight swap ends after that sample. Each stage also in vblank cycles. */
++static int s_it_on = -1, s_it_state;      /* 0 idle, 1 touched, 2 sampled */
++static uint64_t s_it_t_queued, s_it_t_handled, s_it_t_sampled, s_it_swaps[8];
++static int s_it_nswaps;
++static uint32_t s_it_cycle, s_it_c_handled, s_it_c_sampled;
++static uint16_t s_it_prev_pressed;
++
++static uint64_t mono_ns(void) {
++    struct timespec t;
++    clock_gettime(CLOCK_MONOTONIC, &t);
++    return (uint64_t)t.tv_sec * 1000000000ull + (uint64_t)t.tv_nsec;
++}
++
++static int it_enabled(void) {
++    if (s_it_on < 0) { const char *e = getenv("PSX_INPUT_TRACE"); s_it_on = e && *e == '1'; }
++    return s_it_on;
++}
++
++void input_trace_touch(uint64_t queued_age_ns) {
++    if (!it_enabled() || s_it_state != 0) return;
++    s_it_t_handled = mono_ns();
++    s_it_t_queued = s_it_t_handled - queued_age_ns;
++    s_it_c_handled = s_it_cycle;
++    s_it_state = 1;
++}
++
++void input_trace_sampled(uint16_t sio_buttons) {
++    if (!it_enabled()) return;
++    ++s_it_cycle;
++    const uint16_t pressed = (uint16_t)~sio_buttons;
++    const uint16_t fresh = (uint16_t)(pressed & ~s_it_prev_pressed);
++    s_it_prev_pressed = pressed;
++    if (s_it_state == 1 && fresh) {
++        s_it_t_sampled = mono_ns();
++        s_it_c_sampled = s_it_cycle;
++        s_it_nswaps = 0;
++        s_it_state = 2;
++        fprintf(stdout, "input-trace press bits=%04x\n", fresh);
++    } else if (s_it_state == 1 && s_it_cycle - s_it_c_handled > 30) {
++        s_it_state = 0;                           /* a touch that was no button */
++    }
++}
++
++void input_trace_swap_end(void) {
++    if (!it_enabled() || s_it_state != 2) return;
++    s_it_swaps[s_it_nswaps++] = mono_ns();
++    if (s_it_nswaps < 8) return;
++    fprintf(stdout, "input-trace queued=%llu handled+%.1fms sio+%.1fms (cycles %u) swaps_after_sio_ms",
++            (unsigned long long)s_it_t_queued, (s_it_t_handled - s_it_t_queued) / 1e6,
++            (s_it_t_sampled - s_it_t_handled) / 1e6, s_it_c_sampled - s_it_c_handled);
++    for (int i = 0; i < 8; ++i) fprintf(stdout, " %.1f", (s_it_swaps[i] - s_it_t_sampled) / 1e6);
++    fprintf(stdout, " swap_ns");
++    for (int i = 0; i < 8; ++i) fprintf(stdout, " %llu", (unsigned long long)s_it_swaps[i]);
++    fprintf(stdout, "\n");
++    fflush(stdout);
++    s_it_state = 0;
+ }
+ 
+ void latency_ring_restamp_input(void) {
+diff --git a/runtime/src/main.cpp b/runtime/src/main.cpp
+index 9f6c650..342b5d1 100644
+--- a/runtime/src/main.cpp
++++ b/runtime/src/main.cpp
+@@ -7137,6 +7137,7 @@ static void sample_pad_into_sio(int override) {
+          * non-config bus boundary (never mid-poll / mid-handshake). This is the
+          * fix for the v0.5.0 phantom-input regression: slamming the type each
+          * frame raced Tomba's DualShock config handshake -> garbage reads. */
++        if (s == 0) pad.buttons &= (uint16_t)~touch_pad_psx_buttons();   /* touch: direct, min hold */
+         apply_pad_slot_to_sio(s, pad);
+         if (psx_start_consumer_enabled())
+             psx_start_consumer_note(s, consumer_sim, pad.buttons);
+@@ -8420,7 +8421,11 @@ static bool debug_overlay_mouse_event(const SDL_Event& ev) {
+ static bool drain_host_events() {
+     SDL_Event ev;
+     while (SDL_PollEvent(&ev)) {
+-        if (touch_pad_event(&ev)) continue;
++        if (touch_pad_event(&ev)) {
++            if (ev.type == SDL_EVENT_FINGER_DOWN)
++                input_trace_touch(SDL_GetTicksNS() - ev.common.timestamp);
++            continue;
++        }
+         if (debug_overlay_mouse_event(ev)) continue;
+         if (psx_local_mouse_event(ev)) continue;
+         if (ev.type == SDL_QUIT) {
+@@ -8845,6 +8850,7 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
+     /* Latency ring: open this present cycle's slot, stamping when input was
+      * sampled into SIO.  Always-on; queried via the debug server "latency". */
+     latency_ring_frame_begin();
++    input_trace_sampled(sio_get_pad_buttons());
+ 
+     /* Post-savestate CD delay boost (ReadTOC/seek clamp window).
+      * Skip during rollback resim — boost is host-local and not in the CD snap. */
+diff --git a/runtime/src/touch_pad.c b/runtime/src/touch_pad.c
+index 03e7d97..e54a6ed 100644
+--- a/runtime/src/touch_pad.c
++++ b/runtime/src/touch_pad.c
+@@ -187,9 +187,19 @@ static void ensure_ready(void)
+     SDL_SetJoystickVirtualAxis(s_joy, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER, SDL_JOYSTICK_AXIS_MIN);
+ }
+ 
++/* When each button was last pressed (SDL ticks, ms): a tap shorter than
++ * TP_MIN_HOLD_MS still reaches the game (touch_pad_psx_buttons). Hercules
++ * reads its pad every second vblank; a tap whose down and up fall between two
++ * reads (measured: adb taps under ~40 ms) was lost. */
++#define TP_MIN_HOLD_MS 50
++static Uint64 s_down_ms[TP_COUNT];
++
+ static void push_state(uint32_t pressed)
+ {
+     if (pressed & ~s_pressed) psx_android_haptic(PSX_HAPTIC_PRESS);   /* a new press: tick */
++    const Uint64 now = SDL_GetTicks();
++    for (int b = 0; b < TP_COUNT; ++b)
++        if ((pressed & ~s_pressed) >> b & 1) s_down_ms[b] = now;
+     if (pressed == s_pressed || !s_joy) { s_pressed = pressed; return; }
+     s_pressed = pressed;
+     static const struct { int tp, button; } map[] = {
+@@ -508,3 +518,23 @@ void psx_android_haptic(int kind) { (void)kind; }
+ void touch_pad_configure(int show, int size_pct, int alpha_pct, int mid) { (void)show; (void)size_pct; (void)alpha_pct; (void)mid; }
+ 
+ #endif
++
++/* PSX pad bits (active-high) of the touch buttons for Player 1, read by the
++ * runtime at its pad sample: straight into SIO, without the virtual gamepad's
++ * extra event-pump step (measured: it delayed a press by a vblank cycle). A
++ * released button stays down until TP_MIN_HOLD_MS after its press. */
++uint16_t touch_pad_psx_buttons(void)
++{
++    if (!s_ready || !s_show) return 0;
++    static const uint8_t psx_bit[TP_COUNT] = {
++        [TP_UP] = 4, [TP_DOWN] = 6, [TP_LEFT] = 7, [TP_RIGHT] = 5,
++        [TP_CROSS] = 14, [TP_CIRCLE] = 13, [TP_SQUARE] = 15, [TP_TRIANGLE] = 12,
++        [TP_L1] = 10, [TP_R1] = 11, [TP_L2] = 8, [TP_R2] = 9, [TP_SELECT] = 0, [TP_START] = 3,
++    };
++    const Uint64 now = SDL_GetTicks();
++    uint16_t out = 0;
++    for (int b = 0; b < TP_COUNT; ++b)
++        if ((s_pressed >> b & 1) || (s_down_ms[b] && now - s_down_ms[b] < TP_MIN_HOLD_MS))
++            out |= (uint16_t)(1u << psx_bit[b]);
++    return out;
++}
+-- 
+2.56.0
+

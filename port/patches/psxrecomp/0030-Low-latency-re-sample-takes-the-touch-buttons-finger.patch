@@ -1,0 +1,82 @@
+From 84ae1edaa962376998823e179b23aad974c20f0b Mon Sep 17 00:00:00 2001
+From: obaidr1 <147771377+obaidr1@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 23:24:59 +0100
+Subject: [PATCH 30/30] Low-latency re-sample takes the touch buttons' finger
+ events too
+
+The re-sample after the pacer wait only pumped events, so a tap made during
+the wait reached the pad a frame later (measured up to 33 ms in the queue).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ runtime/include/touch_pad.h |  3 +++
+ runtime/src/main.cpp        | 13 +++++++++++++
+ runtime/src/touch_pad.c     |  7 +++++++
+ 3 files changed, 23 insertions(+)
+
+diff --git a/runtime/include/touch_pad.h b/runtime/include/touch_pad.h
+index c76458d..cddda77 100644
+--- a/runtime/include/touch_pad.h
++++ b/runtime/include/touch_pad.h
+@@ -44,6 +44,9 @@ void touch_pad_configure(int show, int size_pct, int alpha_pct, int mid);
+  * for Player 1's pad sample, each at least 50 ms long; 0 when hidden. */
+ unsigned short touch_pad_psx_buttons(void);
+ 
++/* 1 when touch_pad_event takes every finger event (on and shown). */
++int touch_pad_takes_touches(void);
++
+ #ifdef __cplusplus
+ }
+ #endif
+diff --git a/runtime/src/main.cpp b/runtime/src/main.cpp
+index 342b5d1..c82ed05 100644
+--- a/runtime/src/main.cpp
++++ b/runtime/src/main.cpp
+@@ -8418,6 +8418,18 @@ static bool debug_overlay_mouse_event(const SDL_Event& ev) {
+     psx_dbgov_mouse_click();
+     return true;
+ }
++/* Low-latency re-sample: only the touch buttons' finger events, so a tap made
++ * during the pacer wait reaches this frame's pad sample (the full drain stays
++ * at the frame start). Other events wait for that drain. */
++static void drain_touch_pad_events() {
++    if (!touch_pad_takes_touches()) return;
++    SDL_Event ev;
++    while (SDL_PeepEvents(&ev, 1, SDL_GETEVENT, SDL_EVENT_FINGER_DOWN, SDL_EVENT_FINGER_CANCELED) > 0) {
++        if (touch_pad_event(&ev) && ev.type == SDL_EVENT_FINGER_DOWN)
++            input_trace_touch(SDL_GetTicksNS() - ev.common.timestamp);
++    }
++}
++
+ static bool drain_host_events() {
+     SDL_Event ev;
+     while (SDL_PollEvent(&ev)) {
+@@ -9171,6 +9183,7 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
+                 psx_local_mouse_begin(sdl_window, local_mouse_live(override));
+             } else {
+                 SDL_PumpEvents(); // retain native timing when no policy exists
++                drain_touch_pad_events();
+             }
+             sample_pad_into_sio(override);
+             apply_input_override_port2(override_p2);
+diff --git a/runtime/src/touch_pad.c b/runtime/src/touch_pad.c
+index e54a6ed..2221961 100644
+--- a/runtime/src/touch_pad.c
++++ b/runtime/src/touch_pad.c
+@@ -523,6 +523,13 @@ void touch_pad_configure(int show, int size_pct, int alpha_pct, int mid) { (void
+  * runtime at its pad sample: straight into SIO, without the virtual gamepad's
+  * extra event-pump step (measured: it delayed a press by a vblank cycle). A
+  * released button stays down until TP_MIN_HOLD_MS after its press. */
++int touch_pad_takes_touches(void)
++{
++    if (!enabled()) return 0;
++    read_config();
++    return s_show;
++}
++
+ uint16_t touch_pad_psx_buttons(void)
+ {
+     if (!s_ready || !s_show) return 0;
+-- 
+2.56.0
+

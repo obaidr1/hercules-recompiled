@@ -93,8 +93,9 @@ CC BY-NC-SA 4.0; [HDcube](https://github.com/Venomalia/HDcube)). It needs
 - **Privacy.** From 0.5.7 the game writes what happens while you play (items
   collected, levels finished, game overs, difficulty) to
   `hercules_events.jsonl` in the game folder; we use it to add achievements.
-  It is only sent if you agree: the launcher asks once, the default is no,
-  and *General → Send game data* changes it at any time. What is sent: those
+  From 0.5.8 it is sent to us to improve the game and to find errors
+  automatically, unless you switch it off under *General → Send game data*
+  (an answer "no" given in 0.5.7 stays). What is sent: those
   events, the game version, your disc's ID, Windows/Linux and a random number
   made for your installation. No name, no account, no IP address is stored.
   It goes to our own server in Germany and is not shared with anyone.
@@ -109,7 +110,7 @@ CC BY-NC-SA 4.0; [HDcube](https://github.com/Venomalia/HDcube)). It needs
 | [`decomp/`](decomp) | Decompilation of the main executable and the overlays (splat + GCC 2.7.2 / maspsx, byte-identical rebuild), file-format notes (levels, sprites, videos), tools for extraction, HD upscaling and texture packs |
 | [`port/`](port) | The PC port, built on [psxrecomp](https://github.com/RetroPortingToolKit/psxrecomp): game configuration, game-specific mods (HD sprites, widescreen, level select, skip intro / direct start, NTSC speed) and the launcher |
 | `port/psxrecomp` | Submodule: the upstream framework |
-| [`port/patches/psxrecomp`](port/patches/psxrecomp) | Twenty-seven framework changes this port uses that are not upstream (F3/F4 debug overlays and texture-pack tracking across save states; CRT simulation in the GL present path; a hook that lets the game build in its own launcher; a hook for the game's own in-game menu with live settings; the keyboard alongside the gamepad for Player 1; extra builds per disc release sharing one toolchain; a clean debug-server shutdown; the CRT simulation on blended frames; freezing the F4 inspector's picture to mark objects; semi-transparent draws keeping the original texture; NTSC timing for a PAL game as a mod option; the Android build (runtime as an app library, touch controls and their settings, haptics, back gesture, the GL renderer on OpenGL ES 3.2, runtime files installed from the APK); mod calls to return to the launcher and to change the display aspect while running; an aarch64 overlay-toolchain Python for Linux arm64 releases) |
+| [`port/patches/psxrecomp`](port/patches/psxrecomp) | Thirty framework changes this port uses that are not upstream (F3/F4 debug overlays and texture-pack tracking across save states; CRT simulation in the GL present path; a hook that lets the game build in its own launcher; a hook for the game's own in-game menu with live settings; the keyboard alongside the gamepad for Player 1; extra builds per disc release sharing one toolchain; a clean debug-server shutdown; the CRT simulation on blended frames; freezing the F4 inspector's picture to mark objects; semi-transparent draws keeping the original texture; NTSC timing for a PAL game as a mod option; the Android build (runtime as an app library, touch controls and their settings, haptics, back gesture, the GL renderer on OpenGL ES 3.2, runtime files installed from the APK); mod calls to return to the launcher and to change the display aspect while running; an aarch64 overlay-toolchain Python for Linux arm64 releases; saving and loading from the game's own menu; touch buttons straight into the pad with a minimum press, also in the low-latency re-sample) |
 
 ## Getting started
 
