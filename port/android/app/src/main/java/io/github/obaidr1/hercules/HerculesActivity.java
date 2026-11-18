@@ -67,6 +67,11 @@ public class HerculesActivity extends SDLActivity {
         return HdDownload.start(api, serial, pack, data);
     }
 
+    public static boolean hdAllowMobile(boolean on) {
+        HdDownload.allowMobile(on);
+        return true;
+    }
+
     public static boolean hdRunning() {
         return HdDownload.running();
     }

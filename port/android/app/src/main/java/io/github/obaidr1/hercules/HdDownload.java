@@ -15,6 +15,11 @@ import java.security.MessageDigest;
 import java.util.HashMap;
 import java.util.Map;
 
+import android.content.Context;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
+
 import org.json.JSONArray;
 import org.json.JSONObject;
 import org.tukaani.xz.XZInputStream;
@@ -29,6 +34,8 @@ import org.tukaani.xz.XZInputStream;
  *                                    unpacks them to <pack>.installing and
  *                                    swaps that in as <pack>
  *   running()                        the download thread is alive
+ *   allowMobile(on)                  also over a metered network (mobile
+ *                                    data); off: it waits for Wi-Fi
  *   stop()                           ends it; a partial download stays and is
  *                                    continued (HTTP Range) on the next start
  *
@@ -42,12 +49,40 @@ public final class HdDownload {
     private static final String MARKER = "hd-release.json";
     private static volatile Thread thread;
     private static volatile boolean cancel;
+    private static volatile boolean mobileOk;
+    private static volatile double lastFraction;
 
     private HdDownload() { }
 
     static final class Failed extends Exception {
         final String code;
         Failed(String code, String detail) { super(code + ": " + detail); this.code = code; }
+    }
+
+    public static void allowMobile(boolean on) { mobileOk = on; }
+
+    /* An unmetered network (Wi-Fi, Ethernet), or any network when mobile data
+     * is allowed. */
+    private static boolean networkOk() {
+        try {
+            Context ctx = org.libsdl.app.SDLActivity.getContext();
+            ConnectivityManager cm = ctx == null ? null : (ConnectivityManager) ctx.getSystemService(Context.CONNECTIVITY_SERVICE);
+            Network n = cm == null ? null : cm.getActiveNetwork();
+            NetworkCapabilities c = n == null ? null : cm.getNetworkCapabilities(n);
+            if (c == null || !c.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) return false;
+            return mobileOk || c.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED);
+        } catch (Exception e) {
+            return true;                                  // unknown: let the download itself tell
+        }
+    }
+
+    /* Phase "wifi" (the launcher shows "waiting for Wi-Fi") until the network suits. */
+    private static void waitForNetwork() throws Failed {
+        while (!networkOk()) {
+            if (cancel) throw new Failed("stopped", "while waiting for Wi-Fi");
+            progress("wifi", lastFraction, "running", null, true);
+            try { Thread.sleep(5000); } catch (InterruptedException ignored) { }
+        }
     }
 
     public static synchronized boolean start(String api, String serial, String pack, String data) {
@@ -79,6 +114,7 @@ public final class HdDownload {
         long now = System.currentTimeMillis();
         if (!force && now - lastWrite < 500) return;
         lastWrite = now;
+        if (!phase.equals("wifi")) lastFraction = fraction;
         String json = "{\"phase\": \"" + phase + "\", \"fraction\": " + String.format(java.util.Locale.ROOT, "%.4f",
                 Math.max(0, Math.min(1, fraction))) + ", \"eta\": null, \"state\": \"" + state + "\", \"error\": "
                 + (error == null ? "null" : "\"" + error + "\"") + ", \"updated\": " + now / 1000 + "}";
@@ -117,6 +153,7 @@ public final class HdDownload {
     }
 
     private static void install(String api, String serial, File pack, File data) throws Failed {
+        waitForNetwork();
         Map<String, String[]> assets = releaseAssets(api);   // name -> {url, sha256, size}
         String core = "hd-" + serial + "-core.tar.xz", levels = "hd-" + serial + "-levels.tar";
         if (!assets.containsKey(core) || !assets.containsKey(levels))
@@ -252,12 +289,14 @@ public final class HdDownload {
             dst.delete();
             File part = new File(dst.getPath() + ".part");
             for (int attempt = 0; ; attempt++) {
+                waitForNetwork();
                 long have = part.exists() ? part.length() : 0;
                 if (have > size) { part.delete(); have = 0; }
                 if (have < size) {
                     try {
                         fetchTo(url, part, have, size, report);
                     } catch (IOException e) {
+                        if (!cancel && !networkOk()) { attempt--; continue; }   // left Wi-Fi: wait, then go on
                         if (cancel || attempt >= 4) throw e;
                         try { Thread.sleep(3000L << attempt); } catch (InterruptedException ignored) { }
                         continue;                          // continue from what arrived
@@ -286,10 +325,15 @@ public final class HdDownload {
                 out.setLength(got);
                 out.seek(got);
                 byte[] buf = new byte[1 << 16];
+                long check = got;
                 for (int r; (r = in.read(buf)) > 0; ) {
                     if (cancel) throw new IOException("stopped");
                     out.write(buf, 0, r);
                     got += r;
+                    if (got - check > (8 << 20)) {                 // every 8 MB: still on Wi-Fi?
+                        check = got;
+                        if (!networkOk()) throw new IOException("network changed");
+                    }
                     report.at(got);
                 }
             }

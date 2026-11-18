@@ -174,7 +174,7 @@ const Setting kSettings[] = {
     {"hd_levels", "b", "true"}, {"hd_hud", "b", "true"}, {"start_level", "s", "off"},
     {"crt_sim", "b", "false"}, {"crt_mask", "f", "0.5"}, {"crt_bloom", "f", "0.35"},
     {"skip_intro", "b", "true"}, {"skip_memcard", "b", "true"}, {"language", "s", ""}, {"fast_cd", "b", "true"},
-    {"updates", "b", "true"}, {"frame_blend", "s", "off"}, {"ntsc_speed", "b", "true"},
+    {"updates", "b", "true"}, {"frame_blend", "s", "off"}, {"ntsc_speed", "b", "true"}, {"hd_mobile", "b", "false"},
     {"touch_show", "b", "true"}, {"touch_size", "s", "100"}, {"touch_alpha", "s", "70"}, {"touch_pos", "s", "low"},
     {"share_events", "s", "ask"}, {"install_id", "s", ""},
 };
@@ -377,6 +377,19 @@ bool android_hd_call(const char* name) {           // hdRunning / hdStop: ()Z
     jclass cls = env->GetObjectClass(act);
     jmethodID m = cls ? env->GetStaticMethodID(cls, name, "()Z") : nullptr;
     const bool r = m && env->CallStaticBooleanMethod(cls, m);
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    env->DeleteLocalRef(act);
+    if (cls) env->DeleteLocalRef(cls);
+    return r;
+}
+
+bool android_hd_allow_mobile(bool on) {            // hdAllowMobile: (Z)Z
+    JNIEnv* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
+    jobject act = static_cast<jobject>(SDL_GetAndroidActivity());
+    if (!env || !act) return false;
+    jclass cls = env->GetObjectClass(act);
+    jmethodID m = cls ? env->GetStaticMethodID(cls, "hdAllowMobile", "(Z)Z") : nullptr;
+    const bool r = m && env->CallStaticBooleanMethod(cls, m, (jboolean)on);
     if (env->ExceptionCheck()) env->ExceptionClear();
     env->DeleteLocalRef(act);
     if (cls) env->DeleteLocalRef(cls);
@@ -695,13 +708,19 @@ fs::path pack_none(const Ctx& c) {
 
 // The wide aspect: the chosen 16:9 or 21:9; on a phone always the screen's
 // own (N:9, 18..21), so the picture fills it.
-int wide_numerator(const std::string& choice) {
+// "screen" (Android): the phone's own N:9, 16..21 (a 20:9 phone -> 20)
+int screen_numerator() {
 #if defined(__ANDROID__)
     if (const SDL_DisplayMode* m = SDL_GetCurrentDisplayMode(SDL_GetPrimaryDisplay())) {
         const int a = std::max(m->w, m->h), b = std::min(m->w, m->h);
         if (b > 0) return std::clamp((int)std::lround(9.0 * a / b), 16, 21);
     }
 #endif
+    return 16;
+}
+
+int wide_numerator(const std::string& choice) {
+    if (choice == "screen") return screen_numerator();
     return choice == "21:9" ? 21 : 16;
 }
 
@@ -1077,8 +1096,16 @@ struct App {
     void set(const std::string& k, const std::string& v) {
         ctx.store.kv[k] = v;
         ctx.store.save();
-        if (k == "language") switch_release();
+        if (k == "language") {
+            switch_release();
+            // the language is on the disc: say so at once, not only at the next start
+            if (ctx.exe.empty()) show_message(T("disc.no_build", {{"lang", lang_name()}}));   // e.g. an APK of one release
+            else if (ctx.disc.empty()) show_message(T("disc.lang_switch", {{"lang", lang_name()}, {"id", ctx.id}}));
+        }
         if (k == "share_events" && v == "yes") events_start();
+#if defined(__ANDROID__)
+        if (k == "hd_mobile") android_hd_allow_mobile(v == "true");   // a running download follows at once
+#endif
     }
     // Sends the event log in the background when the player agreed (once per run).
     void events_start() {
@@ -1216,7 +1243,7 @@ void MainMenu::render(App& a) {
             }
         }
         const Image& m = touch_menu[last];
-        a.text(a.T("touch.menu"), W / 2.0f, 210, "yellow", "center", 0.8f);
+        if (!a.hd_busy()) a.text(a.T("touch.menu"), W / 2.0f, 210, "yellow", "center", 0.8f);   // HD line below otherwise
 #else
         const Image& m = a.art.menu[last];
 #endif
@@ -1250,9 +1277,12 @@ void MainMenu::render(App& a) {
             SDL_SetTextureColorMod(t, 255, 255, 255);
         }
     }
+#if defined(__ANDROID__)
+    if (!de && !a.hd_busy()) a.text(a.T("touch.menu"), W / 2.0f, 210, "yellow", "center", 0.8f);
+#endif
     for (int i = 0; i < 4; ++i) {
-        if (!de)
-            a.text(a.T("menu." + std::to_string(i)), W / 2.0f, 101 + i * 26, i == sel ? "blue" : "orange", "center");
+        if (!de)   // no disc art for this language: the font at the disc words' size and colour
+            a.text(a.T("menu." + std::to_string(i)), W / 2.0f, 101 + i * 26 - 11, i == sel ? "blue" : "yellow", "center", 1.35f);
         else if (i == 1)   // in the disc's menu: as tall and bright as its own words around it
             a.text(a.T("menu.1"), W / 2.0f, 101 + 26 - 11, i == sel ? "blue" : "yellow", "center", 1.35f);
         a.hit(mx, 98 + i * 26, mw, 25, [this, i] { sel = i; }, [this, &a] { activate(a); });
@@ -1361,13 +1391,17 @@ std::vector<std::pair<std::string, std::vector<Row>>> all_pages() {
     for (const auto& l : kLangs) langs.push_back({l.code, std::string("=") + l.name});
     return {
         {"general", {{"language", langs}, {"skip_intro", {{"false", "show"}, {"true", "skip"}}},
-                     {"ntsc_speed", {{"false", "=PAL"}, {"true", "=NTSC"}}}, {"updates", kOnOff},
+                     {"ntsc_speed", {{"false", "=50 FPS"}, {"true", "=60 FPS"}}}, {"updates", kOnOff},
                      {"share_events", {{"no", "off"}, {"yes", "on"}}}}},
         {"video", {{"internal_resolution", {{"native", "native"}, {"720p", "=720P"}, {"1080p", "=1080P"},
                                             {"1440p", "=1440P"}, {"4k", "=4K"}}},
                    {"aspect_ratio",
 #if defined(__ANDROID__)
-                    {{"4:3", "ratio43"}, {"16:9", "ratio169"}}},   // wide = the phone's own screen
+                    // 16:9, and the phone's own screen (e.g. 20:9) when it is wider
+                    screen_numerator() > 16
+                        ? std::vector<std::pair<std::string, std::string>>{{"4:3", "ratio43"}, {"16:9", "ratio169"},
+                              {"screen", "=" + std::to_string(screen_numerator()) + ":9"}}
+                        : std::vector<std::pair<std::string, std::string>>{{"4:3", "ratio43"}, {"16:9", "ratio169"}}},
 #else
                     {{"4:3", "ratio43"}, {"16:9", "ratio169"}, {"21:9", "ratio219"}}},
 #endif
@@ -1375,14 +1409,14 @@ std::vector<std::pair<std::string, std::vector<Row>>> all_pages() {
                    {"vsync", {{"on", "on"}, {"adaptive", "adaptive"}, {"vrr", "=VRR"}, {"off", "off"}}},
                    {"preset", {{"original", "p_original"}, {"hd", "p_hd"}, {"custom", "p_custom"}}}}},
         // frame_blend ("off"/"linear"/"adaptive") is hidden until CRT and overlays work with it
-        {"gfx", {{"hd_build", {}}, {"hd_sprites", kOnOff}, {"hd_levels", kOnOff}, {"hd_hud", kOnOff},
+        {"gfx", {{"hd_build", {}}, {"hd_mobile", kOnOff}, {"hd_sprites", kOnOff}, {"hd_levels", kOnOff}, {"hd_hud", kOnOff},
                  {"texture_filtering", {{"nearest", "sharp"}, {"bilinear", "soft"}, {"xbr", "=XBR"}}},
                  {"antialiasing", kOnOff}, {"perspective_texturing", kOnOff}, {"geometry_correction", kOnOff}}},
         {"filter", {{"crt_sim", kOnOff}, {"crt_mask", pct({0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1})},
                     {"crt_bloom", pct({0, 0.1, 0.2, 0.3, 0.35, 0.4, 0.5, 0.6, 0.8, 1})}, {"scanlines", kOnOff},
                     {"scanline_strength", pct({0.1, 0.2, 0.3, 0.35, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1})},
                     {"crt_filter", {{"raw", "raw"}, {"crt", "tube"}, {"composite", "=COMPOSITE"}, {"trinitron", "=TRINITRON"}}}}},
-        {"sound", {{"frequency", {{"48000", "=48000"}, {"44100", "=44100"}, {"32000", "=32000"}}},
+        {"sound", {{"frequency", {{"48000", "=HD"}, {"44100", "=CD"}, {"32000", "=SD"}}},
                    {"spu_hq", {{"true", "high"}, {"false", "normal"}}},
                    {"auto_skip_fmv", {{"false", "show"}, {"true", "skip"}}}, {"rewind", kOnOff}}},
     };
@@ -1407,6 +1441,10 @@ std::vector<std::pair<std::string, std::vector<Row>>> pages() {
         rows.erase(std::remove_if(rows.begin(), rows.end(), [](const Row& r) { return hidden.count(r.key) > 0; }),
                    rows.end());
     ps.push_back({"touch", touch_rows()});
+#else
+    for (auto& [name, rows] : ps)                // the PC builds its pack itself
+        rows.erase(std::remove_if(rows.begin(), rows.end(), [](const Row& r) { return r.key == "hd_mobile"; }),
+                   rows.end());
 #endif
     return ps;
 }
@@ -1730,8 +1768,8 @@ bool App::hd_busy() const { return android_hd_call("hdRunning"); }
 
 void App::hd_start() {
     if (hd_busy()) return;
+    android_hd_allow_mobile(ctx.store.b("hd_mobile"));
     if (!android_hd_start(kHdApi, ctx.id, pack_base(ctx).u8string(), hd_data(ctx).u8string())) { hd_gave_up = true; return; }
-    toast(T("touch.hd_start"));
     hd_polled = 0;
 }
 
@@ -1844,6 +1882,8 @@ void App::hd_toggle() {
     hd_start();
 #if defined(__ANDROID__)
     hd_android_was_running = hd_busy();
+    if (hd_android_was_running)
+        show_message(T(ctx.store.b("hd_mobile") ? "touch.hd_info_mobile" : "touch.hd_info"));
 #endif
 }
 
@@ -1858,6 +1898,8 @@ void App::hd_line(float y) {
         if (m < 60) std::snprintf(eta, sizeof eta, "%ld MIN", m);
         else std::snprintf(eta, sizeof eta, "%ld:%02ld H", m / 60, m % 60);
         msg = T("hd_progress", {{"p", std::to_string(p)}, {"eta", eta}});
+    } else if (hd.phase == "wifi") {                                 // Android: waits for Wi-Fi
+        msg = T("touch.hd_wifi", {{"p", std::to_string(p)}});
     } else if (hd.phase == "download" || hd.phase == "install") {   // the ready pack (hd_auto.py)
         msg = T("hd_download", {{"p", std::to_string(p)}});
     } else {
@@ -2064,7 +2106,8 @@ void App::run() {
             screen->long_press(*this);
         }
         if (!toast_text.empty() && SDL_GetTicks() < toast_until) {   // M7: what just changed
-            const float tw = float(text_width(toast_text, 0.8f)), bw = tw + 16, bx = (W - bw) / 2, by = 196;
+            const float fs = std::min(0.8f, 0.8f * (W - 28) / std::max(1.0f, float(text_width(toast_text, 0.8f))));   // long labels: smaller, never wider than the screen
+            const float tw = float(text_width(toast_text, fs)), bw = tw + 16, bx = (W - bw) / 2, by = 196;
             frame(bx, by, bw, 20, SDL_Color{140, 185, 243, 255});
             text(toast_text, W / 2.0f, by + 3, "yellow", "center", 0.8f);
         }
@@ -2683,7 +2726,7 @@ std::vector<MPage> menu_pages() {
         return MRow{key, kOnOff};
     };
     std::vector<MPage> out;
-    out.push_back({"pause", {{"act.resume", {}}, {"act.quit", {}}}});
+    out.push_back({"pause", {{"act.resume", {}}, {"act.save", {}}, {"act.load", {}}, {"act.quit", {}}}});
     MPage gfx{"gfx", {}};
     if (hd_pack_ready(m.ctx))
         for (const char* k : {"hd_sprites", "hd_levels", "hd_hud"}) gfx.rows.push_back(from_launcher(k));
@@ -2878,6 +2921,23 @@ void step(int d) {
     if (r.choices.empty()) {                     // actions: on OK only
         if (d != 0) return;
         if (r.key == "act.resume") close_menu();
+        else if (r.key == "act.save" || r.key == "act.load") {
+            // No F-keys on a phone: save into the first free slot (else the
+            // oldest), load the newest; the launcher's LOAD GAME lists them all.
+            const auto st = list_states(m.ctx);
+            if (r.key == "act.load" && st.empty()) { psx_host_osd(T("act.nothing").c_str(), 1500); return; }
+            int slot = 0;
+            if (r.key == "act.load") slot = st.front().slot;
+            else if (st.size() >= 12) slot = st.back().slot;
+            else {
+                std::set<int> used;
+                for (const auto& s : st) used.insert(s.slot);
+                while (used.count(slot)) ++slot;
+            }
+            close_menu();
+            if (r.key == "act.save" ? psx_host_save_state(slot) : psx_host_load_state(slot))
+                if (r.key == "act.save") psx_host_osd(T("act.saved").c_str(), 1500);
+        }
         else if (r.key == "act.kb_reset") { psx_keybinds_reset_player(1); psx_keybinds_save(); m.dirty = true; }
         else if (r.key.rfind("kb.", 0) == 0) { m.capture = kRebind[m.row - 1]; m.dirty = true; }
         else if (r.key == "act.quit") {
